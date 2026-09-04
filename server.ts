@@ -12,8 +12,19 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './src/server/api/routes';
 import { logger } from './src/server/utils/logger';
+import { validateSecurityConfiguration } from './src/server/utils/config';
+import { sendApiError } from './src/server/utils/errors';
+import { UserService } from './src/server/services/UserService';
 
 async function startServer() {
+  // Validate production security configuration & secrets before accepting traffic
+  validateSecurityConfiguration();
+
+  // Initialize demo user for seamless local and preview evaluation
+  UserService.ensureDemoUser().catch((err) => {
+    logger.debug('Demo user initialization note:', { message: err?.message });
+  });
+
   const app = express();
   const PORT = 3000;
 
@@ -23,6 +34,11 @@ async function startServer() {
 
   // Mount UniCloud API Routes
   app.use('/api', apiRouter);
+
+  // Global API error handler ensuring clean JSON error responses
+  app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    sendApiError(res, err);
+  });
 
   // Vite middleware setup
   if (process.env.NODE_ENV !== 'production') {

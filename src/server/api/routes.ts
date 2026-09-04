@@ -151,7 +151,7 @@ apiRouter.post('/auth/register', async (req: Request, res: Response) => {
     const session = await UserService.createUser({ email, password, displayName });
 
     // Set secure HTTP-only cookie
-    res.cookie(SESSION_COOKIE_NAME, session.sessionToken, getSessionCookieOptions());
+    res.cookie(SESSION_COOKIE_NAME, session.sessionToken, getSessionCookieOptions(req));
 
     const response: ApiResponse<{
       user: typeof session.user;
@@ -166,7 +166,7 @@ apiRouter.post('/auth/register', async (req: Request, res: Response) => {
       },
       meta: {
         timestamp: new Date().toISOString(),
-        version: '1.1.0-phase1',
+        version: '1.2.1-phase2.1',
       },
     };
 
@@ -191,7 +191,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
     const session = await UserService.authenticateUser({ email, password });
 
     // Set secure HTTP-only cookie
-    res.cookie(SESSION_COOKIE_NAME, session.sessionToken, getSessionCookieOptions());
+    res.cookie(SESSION_COOKIE_NAME, session.sessionToken, getSessionCookieOptions(req));
 
     const response: ApiResponse<{
       user: typeof session.user;
@@ -206,7 +206,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
       },
       meta: {
         timestamp: new Date().toISOString(),
-        version: '1.1.0-phase1',
+        version: '1.2.1-phase2.1',
       },
     };
 
@@ -227,14 +227,14 @@ apiRouter.post('/auth/logout', async (req: Request, res: Response) => {
       await UserService.invalidateSession(token);
     }
 
-    res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions());
+    res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions(req));
 
     const response: ApiResponse<{ message: string }> = {
       success: true,
       data: { message: 'Logged out successfully' },
       meta: {
         timestamp: new Date().toISOString(),
-        version: '1.1.0-phase1',
+        version: '1.2.1-phase2.1',
       },
     };
     res.json(response);
@@ -245,15 +245,15 @@ apiRouter.post('/auth/logout', async (req: Request, res: Response) => {
 
 /**
  * GET /api/auth/me
- * Retrieve currently authenticated user profile
+ * Retrieve currently authenticated user profile (or null if unauthenticated)
  */
-apiRouter.get('/auth/me', requireAuth, (req: Request, res: Response) => {
-  const response: ApiResponse<typeof req.user> = {
+apiRouter.get('/auth/me', optionalAuth, (req: Request, res: Response) => {
+  const response: ApiResponse<typeof req.user | null> = {
     success: true,
-    data: req.user,
+    data: req.user || null,
     meta: {
       timestamp: new Date().toISOString(),
-      version: '1.1.0-phase1',
+      version: '1.2.1-phase2.1',
     },
   };
   res.json(response);
@@ -414,8 +414,11 @@ const handleGoogleOAuthCallback = async (req: Request, res: Response) => {
   }
 
   try {
-    // 2. Validate and consume CSRF state token
-    const { userId, redirectUri: storedRedirectUri } = await OAuthStateService.verifyAndConsumeState(state);
+    // 2. Validate and consume CSRF state token atomically
+    const { userId, redirectUri: storedRedirectUri } = await OAuthStateService.verifyAndConsumeState(state, {
+      expectedProvider: ProviderType.GOOGLE_DRIVE,
+      expectedUserId: req.user?.id,
+    });
     const redirectUri = storedRedirectUri || getGoogleRedirectUri(req);
 
     // 3. Exchange code for credentials and Google user profile
@@ -501,8 +504,9 @@ const handleGoogleOAuthCallback = async (req: Request, res: Response) => {
   } catch (err: any) {
     logger.error('Google OAuth callback handler failure', { error: err.message });
     const errorMessage = err.message || 'OAuth authentication sequence failed';
+    const statusCode = err instanceof AppError ? err.statusCode : 400;
 
-    res.status(200).send(`
+    res.status(statusCode).send(`
       <!DOCTYPE html>
       <html>
       <head>

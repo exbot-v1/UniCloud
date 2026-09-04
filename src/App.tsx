@@ -23,6 +23,7 @@ import {
   DEMO_VIRTUAL_FOLDERS,
 } from './data/mockData';
 import { calculateStoragePoolMetrics } from './lib/storageMetrics';
+import { authFetch, clearSessionToken, setSessionToken } from './lib/api';
 import { StorageAccount, StoragePoolSummary } from './types/account';
 import { UserPublicProfile } from './types/auth';
 
@@ -46,9 +47,7 @@ export default function App() {
   const checkSession = useCallback(async () => {
     setLoadingAuth(true);
     try {
-      const res = await fetch('/api/auth/me', {
-        credentials: 'include',
-      });
+      const res = await authFetch('/api/auth/me');
       if (res.ok) {
         const json = await res.json();
         if (json.success && json.data) {
@@ -68,8 +67,8 @@ export default function App() {
   const loadUserData = useCallback(async () => {
     try {
       const [accRes, poolRes] = await Promise.all([
-        fetch('/api/accounts', { credentials: 'include' }),
-        fetch('/api/storage/pool', { credentials: 'include' }),
+        authFetch('/api/accounts'),
+        authFetch('/api/storage/pool'),
       ]);
 
       if (accRes.ok) {
@@ -114,20 +113,23 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', {
+      await authFetch('/api/auth/logout', {
         method: 'POST',
-        credentials: 'include',
       });
     } catch (err) {
       console.warn('Logout error', err);
     } finally {
+      clearSessionToken();
       setUser(null);
       setRealAccounts(null);
       setRealPoolSummary(null);
     }
   };
 
-  const handleAuthSuccess = (authenticatedUser: UserPublicProfile) => {
+  const handleAuthSuccess = (authenticatedUser: UserPublicProfile, token?: string) => {
+    if (token) {
+      setSessionToken(token);
+    }
     setUser(authenticatedUser);
     loadUserData();
   };

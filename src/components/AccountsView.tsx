@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { StorageAccount, StoragePoolSummary, AccountStatus } from '../types/account';
 import { formatBytes, formatDate } from '../lib/formatters';
+import { authFetch } from '../lib/api';
 
 interface AccountsViewProps {
   poolSummary: StoragePoolSummary;
@@ -50,9 +51,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
     setActionNotice(null);
 
     try {
-      const res = await fetch(`/api/accounts/${account.id}/sync`, {
+      const res = await authFetch(`/api/accounts/${account.id}/sync`, {
         method: 'POST',
-        credentials: 'include',
       });
 
       const json = await res.json();
@@ -86,9 +86,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
     setActionNotice(null);
 
     try {
-      const res = await fetch(`/api/accounts/${disconnectModalAccount.id}`, {
+      const res = await authFetch(`/api/accounts/${disconnectModalAccount.id}`, {
         method: 'DELETE',
-        credentials: 'include',
       });
 
       const json = await res.json();

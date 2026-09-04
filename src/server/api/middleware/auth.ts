@@ -10,7 +10,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { UserService, UserPublicProfile } from '../../services/UserService.js';
-import { AppError, ErrorCode } from '../../utils/errors.js';
+import { sendApiError, AppError, ErrorCode } from '../../utils/errors.js';
 
 export const SESSION_COOKIE_NAME = 'unicloud_session';
 
@@ -26,19 +26,24 @@ declare global {
 /**
  * Cookie configuration helper
  */
-export function getSessionCookieOptions() {
-  const isProd = process.env.NODE_ENV === 'production';
+export function getSessionCookieOptions(req?: Request) {
+  // If running on HTTPS (or Cloud Run / forwarded proxy), enable secure and sameSite: 'none' for iframes
+  const isSecure = process.env.NODE_ENV === 'production' ||
+                   Boolean(process.env.APP_URL?.startsWith('https')) ||
+                   Boolean(req?.secure) ||
+                   req?.get('x-forwarded-proto') === 'https';
+
   return {
     httpOnly: true,
-    secure: isProd,
-    sameSite: (isProd ? 'none' : 'lax') as 'none' | 'lax',
+    secure: isSecure,
+    sameSite: (isSecure ? 'none' : 'lax') as 'none' | 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     path: '/',
   };
 }
 
 /**
- * Extract session token from cookie or Authorization header
+ * Extract session token from cookie, Authorization header, or query param
  */
 export function extractSessionToken(req: Request): string | null {
   if (req.cookies && req.cookies[SESSION_COOKIE_NAME]) {
@@ -48,6 +53,10 @@ export function extractSessionToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     return authHeader.substring(7).trim();
+  }
+
+  if (typeof req.query?.token === 'string' && req.query.token.trim()) {
+    return req.query.token.trim();
   }
 
   return null;
@@ -61,29 +70,37 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   try {
     const token = extractSessionToken(req);
     if (!token) {
-      throw new AppError(
-        ErrorCode.UNAUTHORIZED,
-        'Authentication required. Please log in to access this resource.',
-        401
+      sendApiError(
+        res,
+        new AppError(
+          ErrorCode.UNAUTHORIZED,
+          'Authentication required. Please log in to access this resource.',
+          401
+        )
       );
+      return;
     }
 
     const user = await UserService.validateSession(token);
     if (!user) {
       // Clear invalid cookie
-      res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions());
-      throw new AppError(
-        ErrorCode.UNAUTHORIZED,
-        'Session expired or invalid. Please log in again.',
-        401
+      res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions(req));
+      sendApiError(
+        res,
+        new AppError(
+          ErrorCode.UNAUTHORIZED,
+          'Session expired or invalid. Please log in again.',
+          401
+        )
       );
+      return;
     }
 
     // Attach authenticated user identity
     req.user = user;
     next();
   } catch (err) {
-    next(err);
+    sendApiError(res, err);
   }
 }
 

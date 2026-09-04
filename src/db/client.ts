@@ -140,6 +140,7 @@ export async function ensureSchema(): Promise<void> {
       );
 
       CREATE INDEX IF NOT EXISTS idx_virtual_folders_user_parent ON virtual_folders(user_id, parent_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_virtual_folders_account_provider ON virtual_folders (storage_account_id, provider_folder_id);
 
       CREATE TABLE IF NOT EXISTS virtual_files (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -620,8 +621,12 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   if (/DELETE FROM oauth_states WHERE state_id =/i.test(normalizedSql)) {
     const state_id = params[0];
-    memoryDb.oauthStates.delete(state_id);
-    return { rows: [], rowCount: 1 };
+    const stateObj = memoryDb.oauthStates.get(state_id);
+    if (stateObj) {
+      memoryDb.oauthStates.delete(state_id);
+      return { rows: [stateObj as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
   }
 
   // 5. Virtual Files Queries
@@ -656,16 +661,75 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     return { rows: files as any[], rowCount: files.length };
   }
 
+  if (/UPDATE virtual_files SET is_trashed = TRUE/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const userId = params[1];
+    const syncTimeStr = params[2];
+    const syncTime = new Date(syncTimeStr).getTime();
+    let count = 0;
+    for (const f of memoryDb.virtualFiles.values()) {
+      if (
+        f.storage_account_id === accountId &&
+        f.user_id === userId &&
+        !f.is_trashed &&
+        new Date(f.synced_at).getTime() < syncTime
+      ) {
+        f.is_trashed = true;
+        f.trashed_at = new Date().toISOString();
+        f.updated_at = new Date().toISOString();
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
+  }
+
   if (/INSERT INTO virtual_files/i.test(normalizedSql)) {
+    const hasNullParent = /values\s*\(\s*\$1\s*,\s*\$2\s*,\s*\$3\s*,\s*null/i.test(normalizedSql);
     const id = params[0] || `vf_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const user_id = params[1];
     const storage_account_id = params[2];
-    const parent_id = params[3] || null;
-    const provider = params[4] || 'google_drive';
-    const provider_file_id = params[5];
-    const name = params[6];
-    const mime_type = params[7] || 'application/octet-stream';
-    const size_bytes = params[8] || 0;
+    const parent_id = hasNullParent ? null : (params[3] || null);
+    const baseIdx = hasNullParent ? 3 : 4;
+
+    const provider = params[baseIdx] || 'google_drive';
+    const provider_file_id = params[baseIdx + 1];
+    const name = params[baseIdx + 2];
+    const mime_type = params[baseIdx + 3] || 'application/octet-stream';
+    const size_bytes = Number(params[baseIdx + 4]) || 0;
+    const md5_checksum = params[baseIdx + 5] || null;
+    const web_url = params[baseIdx + 6] || null;
+    const is_starred = Boolean(params[baseIdx + 7]);
+    const is_trashed = Boolean(params[baseIdx + 8]);
+    const provider_created_at = params[baseIdx + 9] || new Date().toISOString();
+    const provider_modified_at = params[baseIdx + 10] || new Date().toISOString();
+    const synced_at = params[baseIdx + 11] || new Date().toISOString();
+
+    // Check for conflict on (storage_account_id, provider_file_id)
+    let existingFile: any = null;
+    if (storage_account_id && provider_file_id) {
+      for (const f of memoryDb.virtualFiles.values()) {
+        if (f.storage_account_id === storage_account_id && f.provider_file_id === provider_file_id) {
+          existingFile = f;
+          break;
+        }
+      }
+    }
+
+    if (existingFile) {
+      existingFile.parent_id = parent_id;
+      existingFile.name = name;
+      existingFile.mime_type = mime_type;
+      existingFile.size_bytes = size_bytes;
+      existingFile.md5_checksum = md5_checksum;
+      existingFile.web_url = web_url;
+      existingFile.is_starred = is_starred;
+      existingFile.is_trashed = is_trashed;
+      existingFile.provider_modified_at = provider_modified_at;
+      existingFile.synced_at = new Date().toISOString();
+      existingFile.updated_at = new Date().toISOString();
+      return { rows: [existingFile as any], rowCount: 1 };
+    }
+
     const fileObj = {
       id,
       user_id,
@@ -676,14 +740,14 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       name,
       mime_type,
       size_bytes,
-      md5_checksum: params[9] || null,
-      web_url: params[10] || null,
+      md5_checksum,
+      web_url,
       thumbnail_url: null,
-      is_starred: Boolean(params[11]),
-      is_trashed: Boolean(params[12]),
-      provider_created_at: params[13] || new Date().toISOString(),
-      provider_modified_at: params[14] || new Date().toISOString(),
-      synced_at: new Date().toISOString(),
+      is_starred,
+      is_trashed,
+      provider_created_at,
+      provider_modified_at,
+      synced_at,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -692,14 +756,80 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   // 6. Virtual Folders Queries
+  if (/SELECT .* FROM virtual_folders WHERE storage_account_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const folders: any[] = [];
+    for (const fol of memoryDb.virtualFolders.values()) {
+      if (fol.storage_account_id === accountId) {
+        folders.push(fol);
+      }
+    }
+    return { rows: folders as any[], rowCount: folders.length };
+  }
+
+  if (/UPDATE virtual_folders SET parent_id =/i.test(normalizedSql)) {
+    const parent_id = params[0];
+    const id = params[1];
+    const user_id = params[2];
+    const folder = memoryDb.virtualFolders.get(id);
+    if (folder && folder.user_id === user_id) {
+      folder.parent_id = parent_id;
+      folder.updated_at = new Date().toISOString();
+      return { rows: [folder as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+
+  if (/UPDATE virtual_folders SET name =/i.test(normalizedSql)) {
+    const name = params[0];
+    const is_starred = Boolean(params[1]);
+    const is_trashed = Boolean(params[2]);
+    const id = params[3];
+    const user_id = params[4];
+    const folder = memoryDb.virtualFolders.get(id);
+    if (folder && folder.user_id === user_id) {
+      folder.name = name;
+      folder.is_starred = is_starred;
+      folder.is_trashed = is_trashed;
+      folder.updated_at = new Date().toISOString();
+      return { rows: [folder as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+
   if (/INSERT INTO virtual_folders/i.test(normalizedSql)) {
+    const hasExplicitNullParent = /values\s*\(\s*\$1\s*,\s*\$2\s*,\s*null/i.test(normalizedSql);
     const id = params[0] || `vfol_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const user_id = params[1];
-    const parent_id = params[2] || null;
-    const storage_account_id = params[3] || null;
-    const provider = params[4] || 'google_drive';
-    const provider_folder_id = params[5] || null;
-    const name = params[6];
+    const parent_id = hasExplicitNullParent ? null : (params[2] || null);
+    const baseIdx = hasExplicitNullParent ? 2 : 3;
+
+    const storage_account_id = params[baseIdx] || null;
+    const provider = params[baseIdx + 1] || 'google_drive';
+    const provider_folder_id = params[baseIdx + 2] || null;
+    const name = params[baseIdx + 3];
+    const is_starred = Boolean(params[baseIdx + 4]);
+    const is_trashed = Boolean(params[baseIdx + 5]);
+
+    // Check for conflict on (storage_account_id, provider_folder_id)
+    let existingFolder: any = null;
+    if (storage_account_id && provider_folder_id) {
+      for (const fol of memoryDb.virtualFolders.values()) {
+        if (fol.storage_account_id === storage_account_id && fol.provider_folder_id === provider_folder_id) {
+          existingFolder = fol;
+          break;
+        }
+      }
+    }
+
+    if (existingFolder) {
+      existingFolder.name = name;
+      existingFolder.is_starred = is_starred;
+      existingFolder.is_trashed = is_trashed;
+      existingFolder.updated_at = new Date().toISOString();
+      return { rows: [existingFolder as any], rowCount: 1 };
+    }
+
     const folderObj = {
       id,
       user_id,
@@ -708,8 +838,8 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       provider,
       provider_folder_id,
       name,
-      is_starred: Boolean(params[7]),
-      is_trashed: Boolean(params[8]),
+      is_starred,
+      is_trashed,
       trashed_at: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -717,6 +847,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     memoryDb.virtualFolders.set(id, folderObj);
     return { rows: [folderObj as any], rowCount: 1 };
   }
+
   if (/SELECT .* FROM virtual_folders WHERE user_id =/i.test(normalizedSql)) {
     const userId = params[0];
     const folders: any[] = [];
@@ -726,6 +857,11 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       }
     }
     return { rows: folders as any[], rowCount: folders.length };
+  }
+
+  // 7. Sync History
+  if (/INSERT INTO sync_history/i.test(normalizedSql)) {
+    return { rows: [], rowCount: 1 };
   }
 
   // Fallback generic empty

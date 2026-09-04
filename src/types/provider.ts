@@ -31,6 +31,8 @@ export interface ProviderFileListOptions {
   pageToken?: string;
   includeTrashed?: boolean;
   query?: string;
+  fetchAllPages?: boolean;
+  maxPages?: number;
 }
 
 export interface ProviderFileListResult {

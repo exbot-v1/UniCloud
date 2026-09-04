@@ -220,4 +220,27 @@ export class UserService {
   public static async invalidateAllUserSessions(userId: string): Promise<void> {
     await query('DELETE FROM user_sessions WHERE user_id = $1', [userId]);
   }
+
+  /**
+   * Ensure default demo/developer user (socialdoodle7@gmail.com) exists
+   */
+  public static async ensureDemoUser(): Promise<UserPublicProfile> {
+    const email = 'socialdoodle7@gmail.com';
+    const existing = await this.getUserByEmail(email);
+    if (existing) return existing;
+
+    try {
+      const session = await this.createUser({
+        email,
+        password: 'Password123!',
+        displayName: 'socialdoodle7',
+      });
+      return session.user;
+    } catch {
+      const retry = await this.getUserByEmail(email);
+      if (retry) return retry;
+      throw new Error('Failed to ensure demo user');
+    }
+  }
 }
+

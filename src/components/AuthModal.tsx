@@ -11,11 +11,12 @@
 import React, { useState } from 'react';
 import { X, Lock, Mail, User, ArrowRight, ShieldCheck, AlertCircle, Loader2 } from 'lucide-react';
 import { UserPublicProfile } from '../types/auth';
+import { setSessionToken } from '../lib/api';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAuthSuccess: (user: UserPublicProfile) => void;
+  onAuthSuccess: (user: UserPublicProfile, token?: string) => void;
   initialMode?: 'login' | 'register';
 }
 
@@ -58,7 +59,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         throw new Error(data.error?.message || 'Authentication failed. Please check your credentials.');
       }
 
-      onAuthSuccess(data.data.user);
+      if (data.data?.sessionToken) {
+        setSessionToken(data.data.sessionToken);
+      }
+
+      onAuthSuccess(data.data.user, data.data.sessionToken);
       onClose();
     } catch (err: any) {
       setError(err.message || 'An error occurred during authentication.');
@@ -104,7 +109,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         throw new Error(data.error?.message || 'Demo authentication failed.');
       }
 
-      onAuthSuccess(data.data.user);
+      if (data.data?.sessionToken) {
+        setSessionToken(data.data.sessionToken);
+      }
+
+      onAuthSuccess(data.data.user, data.data.sessionToken);
       onClose();
     } catch (err: any) {
       setError(err.message);

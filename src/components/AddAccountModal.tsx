@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { UserPublicProfile } from '../types/auth';
 import { StorageAccount } from '../types/account';
+import { getSessionToken } from '../lib/api';
 
 interface AddAccountModalProps {
   isOpen: boolean;
@@ -132,20 +133,25 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
     setConnecting(true);
     setErrorMessage(null);
 
+    const token = getSessionToken();
+    const connectUrl = token
+      ? `/api/accounts/google/connect?token=${encodeURIComponent(token)}`
+      : '/api/accounts/google/connect';
+
     const width = 600;
     const height = 700;
     const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
     const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
 
     const popup = window.open(
-      '/api/accounts/google/connect',
+      connectUrl,
       'unicloud_google_oauth',
       `width=${width},height=${height},left=${left},top=${top},scrollbars=yes,status=yes`
     );
 
     if (!popup || popup.closed || typeof popup.closed === 'undefined') {
       // Popup blocked by browser: fallback to full-page navigation
-      window.location.href = '/api/accounts/google/connect';
+      window.location.href = connectUrl;
       return;
     }
 

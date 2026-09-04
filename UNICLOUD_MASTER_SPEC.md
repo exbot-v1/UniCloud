@@ -1,7 +1,7 @@
 # UNICLOUD — MASTER ARCHITECTURE & SPECIFICATION DOCUMENT
 
-> **Version:** 1.2.0-phase1  
-> **Status:** Phase 1 Complete — Database, Authentication & Real Backend State Operational  
+> **Version:** 1.2.1-phase2.1  
+> **Status:** Phase 2 & Phase 2.1 Complete — Google OAuth 2.0, Secure Drive Integration & Hardened Architecture Operational  
 > **Target Release:** Unified Virtual Cloud Storage  
 > **Author:** Lead Software Architect & Full-Stack Engineer  
 
@@ -379,5 +379,77 @@ Phase 1 has established the production-grade persistence and identity foundation
    - `AuthModal` provides interactive registration, login, and quick demo sign-in for `socialdoodle7@gmail.com`.
    - `Header` displays authenticated user profile and logout actions.
    - Clear visual isolation between real user state and simulated preview fixtures (`Demo Drive 01, 02, 03`).
+
+---
+
+## 17. PHASE 2 IMPLEMENTATION SUMMARY: GOOGLE OAUTH 2.0 & REAL DRIVE ACCOUNTS
+
+Phase 2 established direct Google Drive integration, multi-account management, and live storage pool aggregation:
+
+1. **Google OAuth 2.0 Authorization Flow:**
+   - Server-side OAuth code exchange with Google Identity services requesting `https://www.googleapis.com/auth/drive` and profile scopes.
+   - Strict offline access configuration (`access_type: 'offline'`, `prompt: 'consent'`) ensuring persistent refresh tokens.
+   - Client popup UX with secure cross-window `postMessage` synchronization and automatic storage pool updates.
+
+2. **Secure Multi-Account Storage & Encryption:**
+   - Multiple Google Drive accounts can be linked to a single UniCloud user account.
+   - Refresh tokens are encrypted with AES-256-GCM before storage in the `storage_accounts` PostgreSQL table.
+   - Real-time quota metrics retrieved via Google Drive v3 `about.get` (`totalBytes`, `usedBytes`, `freeBytes`, and percentage).
+
+3. **Storage Account Management API:**
+   - `GET /api/accounts`: List all connected accounts with decrypted quotas and operational statuses.
+   - `POST /api/accounts/google/auth-url`: Initiate OAuth consent sequence with signed state tokens.
+   - `GET /api/accounts/google/callback`: Verify state, exchange authorization code, retrieve profile, and register account.
+   - `POST /api/accounts/:id/sync`: Trigger metadata synchronization and quota refresh.
+   - `POST /api/accounts/:id/reconnect`: Re-authenticate an expired or invalid token.
+   - `DELETE /api/accounts/:id`: Gracefully disconnect account and clean up virtual filesystem records.
+
+---
+
+## 18. PHASE 2.1 CORRECTIVE HARDENING SPECIFICATION & VERIFICATION
+
+Phase 2.1 addressed edge cases and security vulnerabilities identified during the architecture audit:
+
+### 18.1 Key Hardening Fixes
+
+1. **OAuth State Validation & Replay Prevention (Fix #1):**
+   - Implemented atomic state consumption (`DELETE ... RETURNING`) preventing race conditions and replay attacks.
+   - Implemented constant-time HMAC-SHA256 signature comparison that safely validates length before calling `crypto.timingSafeEqual`, eliminating potential uncaught `RangeError` exceptions on malformed state tokens.
+   - Added user ID tenancy and provider binding (`google_drive`) to prevent cross-account or cross-provider state substitution.
+
+2. **Production Secret Enforcement (Fix #2):**
+   - Created centralized security configuration validator (`src/server/utils/config.ts`).
+   - Hardened `src/server/utils/encryption.ts` to require 256-bit (64-character hexadecimal) encryption keys.
+   - Enforced fail-fast startup behavior: the server immediately crashes if `NODE_ENV === 'production'` and `ENCRYPTION_KEY` or `SESSION_SECRET` are missing or invalid.
+   - Explicitly logs configuration safety status at server startup.
+
+3. **Complete Google Drive Pagination (Fix #3):**
+   - Refactored `GoogleDriveProvider.listFiles` to support full pagination loops using `nextPageToken`.
+   - Added `fetchAllPages` (defaulting to true for complete syncs) and `maxPages` safeguards to `ProviderFileListOptions`.
+
+4. **Two-Pass Folder Hierarchy Resolution (Fix #4):**
+   - Replaced flat folder imports with a two-pass resolution algorithm in `SyncService.ts`:
+     - **Pass 1:** Upsert all folders to establish virtual UUIDs mapped to upstream Google folder IDs.
+     - **Pass 1.5:** Resolve folder-to-folder relationships and link child folder `parent_id` to the parent virtual folder UUID.
+     - **Pass 2:** Upsert files, mapping their `parent_id` to the corresponding virtual folder UUID (or `NULL` for root files).
+
+5. **Database Idempotency & Unique Constraints (Fix #5):**
+   - Added unique constraint `uq_virtual_folders_account_provider` on `virtual_folders (storage_account_id, provider_folder_id)`.
+   - Updated both PostgreSQL DDL (`schema.sql`) and development in-memory engine (`client.ts`) to handle `ON CONFLICT` updates cleanly, ensuring re-synchronization never creates duplicate records.
+
+6. **Stale / Deleted Upstream File Cleanup (Fix #6):**
+   - Recorded `syncStartTime` at the beginning of each synchronization session.
+   - Identified any files belonging to the account where `synced_at < syncStartTime` and marked them as `is_trashed = TRUE, trashed_at = NOW()`.
+   - Logged sync execution metrics to the `sync_history` audit table.
+
+### 18.2 Verification & Automated Test Suite
+
+A dedicated automated test suite (`src/test/phase2_1_hardening.test.ts`) verifies all Phase 2.1 hardening objectives:
+- **OAuth State Hardening:** Validates state generation, successful consumption, single-use replay rejection, tampered signature rejection (both mismatched and identical lengths), and user/provider tenancy checks.
+- **Production Secret Enforcement:** Validates 256-bit AES-GCM encryption/decryption, fail-fast behavior in production, and key formatting validation.
+- **Pagination & Hierarchy:** Validates pagination options, two-pass folder linking, idempotent sync upsert behavior, and stale upstream file cleanup.
+
+All 12 automated test cases pass cleanly (`npm test`).
+
 
 

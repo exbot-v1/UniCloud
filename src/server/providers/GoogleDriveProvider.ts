@@ -231,33 +231,51 @@ export class GoogleDriveProvider implements StorageProvider {
       }
 
       const q = qParts.length > 0 ? qParts.join(' and ') : undefined;
+      const shouldFetchAllPages = options?.fetchAllPages ?? true;
+      const maxPages = options?.maxPages || 100;
+      const pageSize = Math.min(options?.pageSize || 100, 100);
 
-      const res = await drive.files.list({
-        q,
-        pageSize: Math.min(options?.pageSize || 100, 100),
-        pageToken: options?.pageToken,
-        fields: 'nextPageToken, files(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred)',
-        orderBy: 'folder,modifiedTime desc',
-      });
+      const allFiles: ProviderFileMetadata[] = [];
+      let currentPageToken: string | undefined = options?.pageToken;
+      let pageCount = 0;
 
-      const files: ProviderFileMetadata[] = (res.data.files || []).map((f) => ({
-        providerFileId: f.id || '',
-        name: f.name || 'Untitled',
-        mimeType: f.mimeType || 'application/octet-stream',
-        sizeBytes: f.size ? Number(f.size) : 0,
-        parentFolderId: f.parents && f.parents.length > 0 ? f.parents[0] : null,
-        isFolder: f.mimeType === 'application/vnd.google-apps.folder',
-        webUrl: f.webViewLink || undefined,
-        md5Checksum: f.md5Checksum || undefined,
-        isStarred: Boolean(f.starred),
-        isTrashed: Boolean(f.trashed),
-        createdAt: f.createdTime || new Date().toISOString(),
-        modifiedAt: f.modifiedTime || new Date().toISOString(),
-      }));
+      do {
+        const res = await drive.files.list({
+          q,
+          pageSize,
+          pageToken: currentPageToken,
+          fields: 'nextPageToken, files(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred)',
+          orderBy: 'folder,modifiedTime desc',
+        });
+
+        const pageFiles: ProviderFileMetadata[] = (res.data.files || []).map((f) => ({
+          providerFileId: f.id || '',
+          name: f.name || 'Untitled',
+          mimeType: f.mimeType || 'application/octet-stream',
+          sizeBytes: f.size ? Number(f.size) : 0,
+          parentFolderId: f.parents && f.parents.length > 0 ? f.parents[0] : null,
+          isFolder: f.mimeType === 'application/vnd.google-apps.folder',
+          webUrl: f.webViewLink || undefined,
+          md5Checksum: f.md5Checksum || undefined,
+          isStarred: Boolean(f.starred),
+          isTrashed: Boolean(f.trashed),
+          createdAt: f.createdTime || new Date().toISOString(),
+          modifiedAt: f.modifiedTime || new Date().toISOString(),
+        }));
+
+        allFiles.push(...pageFiles);
+        currentPageToken = res.data.nextPageToken || undefined;
+        pageCount++;
+
+        // If caller explicitly requested only a single page, stop after one page
+        if (!shouldFetchAllPages) {
+          break;
+        }
+      } while (currentPageToken && pageCount < maxPages);
 
       return {
-        files,
-        nextPageToken: res.data.nextPageToken || undefined,
+        files: allFiles,
+        nextPageToken: currentPageToken,
       };
     } catch (err: any) {
       if (err instanceof AppError) throw err;

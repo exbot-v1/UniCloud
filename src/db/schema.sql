@@ -108,8 +108,8 @@ CREATE TABLE IF NOT EXISTS virtual_folders (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- Prevent duplicate folder names in the same parent directory
-    CONSTRAINT uq_folder_name_in_parent UNIQUE NULLS NOT DISTINCT (user_id, parent_id, name, is_trashed)
+    -- Prevent duplicate provider folders per storage account
+    CONSTRAINT uq_virtual_folders_account_provider UNIQUE (storage_account_id, provider_folder_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_virtual_folders_user_parent ON virtual_folders(user_id, parent_id);

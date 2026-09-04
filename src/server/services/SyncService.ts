@@ -22,6 +22,8 @@ export interface SyncResult {
   accountId: string;
   filesDiscovered: number;
   filesAddedOrUpdated: number;
+  filesRemoved?: number;
+  foldersProcessed?: number;
   quotaUpdated: boolean;
   timestamp: string;
 }
@@ -31,10 +33,14 @@ export class SyncService {
    * Synchronizes an individual connected Google Drive account:
    * 1. Refreshes OAuth access token using stored encrypted refresh token.
    * 2. Retrieves actual storage quota via Google Drive v3 `about.get` and persists it.
-   * 3. Queries Google Drive v3 `files.list` and maps files and folders into virtual filesystem tables.
-   * 4. Updates last_synced_at timestamp and records sync history.
+   * 3. Queries Google Drive v3 `files.list` with full pagination.
+   * 4. Resolves folder hierarchy in two passes (folders first, link parents, then files).
+   * 5. Idempotently upserts files and folders.
+   * 6. Marks stale/removed upstream files as trashed.
+   * 7. Records audit record in sync_history.
    */
   async syncAccount(userId: string, accountId: string): Promise<SyncResult> {
+    const syncStartTime = new Date();
     logger.info(`Starting sync for account ${accountId}, user ${userId}`);
 
     // Verify ownership and get credentials
@@ -49,114 +55,187 @@ export class SyncService {
       const quota = await provider.getStorageQuota(accessToken);
       await accountService.updateQuota(userId, accountId, quota);
 
-      // 3. Query Drive Metadata (Files & Folders)
-      const listResult = await provider.listFiles(accessToken, { pageSize: 100 });
-      let filesCount = 0;
+      // 3. Query Drive Metadata with complete pagination
+      const listResult = await provider.listFiles(accessToken, {
+        fetchAllPages: true,
+        pageSize: 100,
+      });
 
-      // 4. Upsert virtual files & folders
-      for (const item of listResult.files) {
-        if (item.isFolder) {
-          // Check if folder already exists
-          const existingFolder = await query(
-            `SELECT id FROM virtual_folders 
-             WHERE storage_account_id = $1 AND provider_folder_id = $2`,
-            [accountId, item.providerFileId]
+      const folderItems = listResult.files.filter((item) => item.isFolder);
+      const fileItems = listResult.files.filter((item) => !item.isFolder);
+
+      // 4. Load existing folder mappings for this account
+      const existingFolderRows = await query(
+        `SELECT id, provider_folder_id, parent_id FROM virtual_folders 
+         WHERE storage_account_id = $1 AND provider_folder_id IS NOT NULL`,
+        [accountId]
+      );
+
+      const folderMap = new Map<string, string>(); // Google provider folder ID -> virtual_folders UUID
+      for (const row of existingFolderRows.rows) {
+        folderMap.set(row.provider_folder_id, row.id);
+      }
+
+      // PASS 1: Upsert all folders to establish virtual UUIDs
+      for (const folder of folderItems) {
+        let virtualFolderId = folderMap.get(folder.providerFileId);
+
+        if (!virtualFolderId) {
+          virtualFolderId = crypto.randomUUID();
+          await query(
+            `INSERT INTO virtual_folders (
+              id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
+              name, is_starred, is_trashed, created_at, updated_at
+            ) VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (storage_account_id, provider_folder_id) DO UPDATE SET
+              name = EXCLUDED.name,
+              is_starred = EXCLUDED.is_starred,
+              is_trashed = EXCLUDED.is_trashed,
+              updated_at = NOW()`,
+            [
+              virtualFolderId,
+              userId,
+              accountId,
+              ProviderType.GOOGLE_DRIVE,
+              folder.providerFileId,
+              folder.name,
+              folder.isStarred ?? false,
+              folder.isTrashed ?? false,
+              folder.createdAt,
+              folder.modifiedAt,
+            ]
           );
-
-          if (existingFolder.rows.length === 0) {
-            const folderId = crypto.randomUUID();
-            await query(
-              `INSERT INTO virtual_folders (
-                id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
-                name, is_starred, is_trashed, created_at, updated_at
-              ) VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10)`,
-              [
-                folderId,
-                userId,
-                accountId,
-                ProviderType.GOOGLE_DRIVE,
-                item.providerFileId,
-                item.name,
-                item.isStarred,
-                item.isTrashed,
-                item.createdAt,
-                item.modifiedAt,
-              ]
-            );
-          }
+          folderMap.set(folder.providerFileId, virtualFolderId);
         } else {
-          // Upsert file
-          const existingFile = await query(
-            `SELECT id FROM virtual_files 
-             WHERE storage_account_id = $1 AND provider_file_id = $2`,
-            [accountId, item.providerFileId]
+          // Update existing folder attributes
+          await query(
+            `UPDATE virtual_folders SET
+              name = $1,
+              is_starred = $2,
+              is_trashed = $3,
+              updated_at = NOW()
+             WHERE id = $4 AND user_id = $5`,
+            [
+              folder.name,
+              folder.isStarred ?? false,
+              folder.isTrashed ?? false,
+              virtualFolderId,
+              userId,
+            ]
           );
-
-          if (existingFile.rows.length === 0) {
-            const fileId = crypto.randomUUID();
-            await query(
-              `INSERT INTO virtual_files (
-                id, user_id, storage_account_id, parent_id, provider, provider_file_id,
-                name, mime_type, size_bytes, md5_checksum, web_url, is_starred, is_trashed,
-                provider_created_at, provider_modified_at, synced_at, created_at, updated_at
-              ) VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW(), NOW())`,
-              [
-                fileId,
-                userId,
-                accountId,
-                ProviderType.GOOGLE_DRIVE,
-                item.providerFileId,
-                item.name,
-                item.mimeType,
-                item.sizeBytes,
-                item.md5Checksum || null,
-                item.webUrl || null,
-                item.isStarred,
-                item.isTrashed,
-                item.createdAt,
-                item.modifiedAt,
-              ]
-            );
-          } else {
-            // Update existing file metadata
-            await query(
-              `UPDATE virtual_files SET
-                name = $1,
-                mime_type = $2,
-                size_bytes = $3,
-                web_url = $4,
-                is_starred = $5,
-                is_trashed = $6,
-                provider_modified_at = $7,
-                synced_at = NOW(),
-                updated_at = NOW()
-               WHERE id = $8 AND user_id = $9`,
-              [
-                item.name,
-                item.mimeType,
-                item.sizeBytes,
-                item.webUrl || null,
-                item.isStarred,
-                item.isTrashed,
-                item.modifiedAt,
-                existingFile.rows[0].id,
-                userId,
-              ]
-            );
-          }
-          filesCount++;
         }
       }
+
+      // PASS 1.5: Resolve folder-to-folder parent relationships
+      for (const folder of folderItems) {
+        const virtualFolderId = folderMap.get(folder.providerFileId)!;
+        const gDriveParentId = folder.parentFolderId;
+        const resolvedParentId = (gDriveParentId && folderMap.has(gDriveParentId))
+          ? folderMap.get(gDriveParentId)!
+          : null;
+
+        await query(
+          `UPDATE virtual_folders SET
+            parent_id = $1,
+            updated_at = NOW()
+           WHERE id = $2 AND user_id = $3`,
+          [resolvedParentId, virtualFolderId, userId]
+        );
+      }
+
+      // PASS 2: Upsert files with parent_id mapped to corresponding virtual_folder.id
+      let filesAddedOrUpdatedCount = 0;
+      for (const file of fileItems) {
+        const gDriveParentId = file.parentFolderId;
+        const resolvedParentId = (gDriveParentId && folderMap.has(gDriveParentId))
+          ? folderMap.get(gDriveParentId)!
+          : null;
+
+        const fileId = crypto.randomUUID();
+        await query(
+          `INSERT INTO virtual_files (
+            id, user_id, storage_account_id, parent_id, provider, provider_file_id,
+            name, mime_type, size_bytes, md5_checksum, web_url, is_starred, is_trashed,
+            provider_created_at, provider_modified_at, synced_at, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW(), NOW())
+          ON CONFLICT (storage_account_id, provider_file_id) DO UPDATE SET
+            parent_id = EXCLUDED.parent_id,
+            name = EXCLUDED.name,
+            mime_type = EXCLUDED.mime_type,
+            size_bytes = EXCLUDED.size_bytes,
+            md5_checksum = EXCLUDED.md5_checksum,
+            web_url = EXCLUDED.web_url,
+            is_starred = EXCLUDED.is_starred,
+            is_trashed = EXCLUDED.is_trashed,
+            provider_modified_at = EXCLUDED.provider_modified_at,
+            synced_at = NOW(),
+            updated_at = NOW()`,
+          [
+            fileId,
+            userId,
+            accountId,
+            resolvedParentId,
+            ProviderType.GOOGLE_DRIVE,
+            file.providerFileId,
+            file.name,
+            file.mimeType,
+            file.sizeBytes,
+            file.md5Checksum || null,
+            file.webUrl || null,
+            file.isStarred ?? false,
+            file.isTrashed ?? false,
+            file.createdAt,
+            file.modifiedAt,
+          ]
+        );
+        filesAddedOrUpdatedCount++;
+      }
+
+      // 5. Detect and mark stale / deleted upstream files as trashed
+      const staleFilesResult = await query(
+        `UPDATE virtual_files SET
+          is_trashed = TRUE,
+          trashed_at = NOW(),
+          updated_at = NOW()
+         WHERE storage_account_id = $1
+           AND user_id = $2
+           AND is_trashed = FALSE
+           AND synced_at < $3`,
+        [accountId, userId, syncStartTime.toISOString()]
+      );
+      const filesRemoved = staleFilesResult.rowCount || 0;
+
+      // 6. Record sync audit record
+      await query(
+        `INSERT INTO sync_history (
+          id, user_id, storage_account_id, status, files_discovered,
+          files_added, files_updated, files_removed, started_at, completed_at
+        ) VALUES ($1, $2, $3, 'completed', $4, $5, $6, $7, $8, NOW())`,
+        [
+          crypto.randomUUID(),
+          userId,
+          accountId,
+          listResult.files.length,
+          filesAddedOrUpdatedCount,
+          0,
+          filesRemoved,
+          syncStartTime.toISOString(),
+        ]
+      );
 
       // Mark account active and clear any error
       await accountService.updateAccountStatus(userId, accountId, AccountStatus.ACTIVE, null);
 
-      logger.info(`Successfully synced account ${accountId}: ${filesCount} files processed`);
+      logger.info(
+        `Successfully synced account ${accountId}: ${filesAddedOrUpdatedCount} files, ${folderItems.length} folders, ${filesRemoved} stale files marked trashed`
+      );
 
       return {
         accountId,
         filesDiscovered: listResult.files.length,
-        filesAddedOrUpdated: filesCount,
+        filesAddedOrUpdated: filesAddedOrUpdatedCount,
+        filesRemoved,
+        foldersProcessed: folderItems.length,
         quotaUpdated: true,
         timestamp: new Date().toISOString(),
       };
