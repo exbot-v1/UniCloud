@@ -25,6 +25,7 @@ export interface SyncResult {
   filesRemoved?: number;
   foldersProcessed?: number;
   quotaUpdated: boolean;
+  paginationComplete: boolean;
   timestamp: string;
 }
 
@@ -36,7 +37,7 @@ export class SyncService {
    * 3. Queries Google Drive v3 `files.list` with full pagination.
    * 4. Resolves folder hierarchy in two passes (folders first, link parents, then files).
    * 5. Idempotently upserts files and folders.
-   * 6. Marks stale/removed upstream files as trashed.
+   * 6. Marks stale/removed upstream files as trashed ONLY when pagination was complete.
    * 7. Records audit record in sync_history.
    */
   async syncAccount(userId: string, accountId: string): Promise<SyncResult> {
@@ -71,58 +72,41 @@ export class SyncService {
         [accountId]
       );
 
-      const folderMap = new Map<string, string>(); // Google provider folder ID -> virtual_folders UUID
+      const folderMap = new Map<string, string>(); // Google provider folder ID -> authoritative virtual_folders UUID
       for (const row of existingFolderRows.rows) {
         folderMap.set(row.provider_folder_id, row.id);
       }
 
-      // PASS 1: Upsert all folders to establish virtual UUIDs
+      // PASS 1: Upsert all folders and establish authoritative virtual folder IDs
       for (const folder of folderItems) {
-        let virtualFolderId = folderMap.get(folder.providerFileId);
+        const upsertResult = await query<{ id: string }>(
+          `INSERT INTO virtual_folders (
+            id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
+            name, is_starred, is_trashed, created_at, updated_at
+          ) VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10)
+          ON CONFLICT (storage_account_id, provider_folder_id) DO UPDATE SET
+            name = EXCLUDED.name,
+            is_starred = EXCLUDED.is_starred,
+            is_trashed = EXCLUDED.is_trashed,
+            updated_at = NOW()
+          RETURNING id`,
+          [
+            crypto.randomUUID(),
+            userId,
+            accountId,
+            ProviderType.GOOGLE_DRIVE,
+            folder.providerFileId,
+            folder.name,
+            folder.isStarred ?? false,
+            folder.isTrashed ?? false,
+            folder.createdAt,
+            folder.modifiedAt,
+          ]
+        );
 
-        if (!virtualFolderId) {
-          virtualFolderId = crypto.randomUUID();
-          await query(
-            `INSERT INTO virtual_folders (
-              id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
-              name, is_starred, is_trashed, created_at, updated_at
-            ) VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10)
-            ON CONFLICT (storage_account_id, provider_folder_id) DO UPDATE SET
-              name = EXCLUDED.name,
-              is_starred = EXCLUDED.is_starred,
-              is_trashed = EXCLUDED.is_trashed,
-              updated_at = NOW()`,
-            [
-              virtualFolderId,
-              userId,
-              accountId,
-              ProviderType.GOOGLE_DRIVE,
-              folder.providerFileId,
-              folder.name,
-              folder.isStarred ?? false,
-              folder.isTrashed ?? false,
-              folder.createdAt,
-              folder.modifiedAt,
-            ]
-          );
-          folderMap.set(folder.providerFileId, virtualFolderId);
-        } else {
-          // Update existing folder attributes
-          await query(
-            `UPDATE virtual_folders SET
-              name = $1,
-              is_starred = $2,
-              is_trashed = $3,
-              updated_at = NOW()
-             WHERE id = $4 AND user_id = $5`,
-            [
-              folder.name,
-              folder.isStarred ?? false,
-              folder.isTrashed ?? false,
-              virtualFolderId,
-              userId,
-            ]
-          );
+        const authoritativeFolderId = upsertResult.rows[0]?.id;
+        if (authoritativeFolderId) {
+          folderMap.set(folder.providerFileId, authoritativeFolderId);
         }
       }
 
@@ -191,34 +175,48 @@ export class SyncService {
         filesAddedOrUpdatedCount++;
       }
 
-      // 5. Detect and mark stale / deleted upstream files as trashed
-      const staleFilesResult = await query(
-        `UPDATE virtual_files SET
-          is_trashed = TRUE,
-          trashed_at = NOW(),
-          updated_at = NOW()
-         WHERE storage_account_id = $1
-           AND user_id = $2
-           AND is_trashed = FALSE
-           AND synced_at < $3`,
-        [accountId, userId, syncStartTime.toISOString()]
-      );
-      const filesRemoved = staleFilesResult.rowCount || 0;
+      // 5. Detect and mark stale / deleted upstream files as trashed ONLY when pagination was complete
+      let filesRemoved = 0;
+      if (listResult.paginationComplete) {
+        const staleFilesResult = await query(
+          `UPDATE virtual_files SET
+            is_trashed = TRUE,
+            trashed_at = NOW(),
+            updated_at = NOW()
+           WHERE storage_account_id = $1
+             AND user_id = $2
+             AND is_trashed = FALSE
+             AND synced_at < $3`,
+          [accountId, userId, syncStartTime.toISOString()]
+        );
+        filesRemoved = staleFilesResult.rowCount || 0;
+      } else {
+        logger.warn(
+          `Account ${accountId} sync pagination was truncated or incomplete. Stale file reconciliation skipped to protect unvisited files.`
+        );
+      }
 
       // 6. Record sync audit record
+      const syncStatus = listResult.paginationComplete ? 'completed' : 'partial';
+      const syncNote = listResult.paginationComplete
+        ? null
+        : 'Pagination truncated: maxPages reached before consuming all upstream pages. Stale-item reconciliation skipped.';
+
       await query(
         `INSERT INTO sync_history (
           id, user_id, storage_account_id, status, files_discovered,
-          files_added, files_updated, files_removed, started_at, completed_at
-        ) VALUES ($1, $2, $3, 'completed', $4, $5, $6, $7, $8, NOW())`,
+          files_added, files_updated, files_removed, error_message, started_at, completed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
         [
           crypto.randomUUID(),
           userId,
           accountId,
+          syncStatus,
           listResult.files.length,
           filesAddedOrUpdatedCount,
           0,
           filesRemoved,
+          syncNote,
           syncStartTime.toISOString(),
         ]
       );
@@ -227,7 +225,7 @@ export class SyncService {
       await accountService.updateAccountStatus(userId, accountId, AccountStatus.ACTIVE, null);
 
       logger.info(
-        `Successfully synced account ${accountId}: ${filesAddedOrUpdatedCount} files, ${folderItems.length} folders, ${filesRemoved} stale files marked trashed`
+        `Successfully synced account ${accountId}: ${filesAddedOrUpdatedCount} files, ${folderItems.length} folders, ${filesRemoved} stale files marked trashed (paginationComplete: ${listResult.paginationComplete})`
       );
 
       return {
@@ -237,6 +235,7 @@ export class SyncService {
         filesRemoved,
         foldersProcessed: folderItems.length,
         quotaUpdated: true,
+        paginationComplete: listResult.paginationComplete,
         timestamp: new Date().toISOString(),
       };
     } catch (err: any) {

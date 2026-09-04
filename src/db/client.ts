@@ -178,6 +178,22 @@ export async function ensureSchema(): Promise<void> {
       );
 
       CREATE INDEX IF NOT EXISTS idx_oauth_states_user ON oauth_states(user_id);
+
+      CREATE TABLE IF NOT EXISTS sync_history (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        storage_account_id UUID NOT NULL REFERENCES storage_accounts(id) ON DELETE CASCADE,
+        status VARCHAR(50) NOT NULL DEFAULT 'running',
+        files_discovered INTEGER NOT NULL DEFAULT 0,
+        files_added INTEGER NOT NULL DEFAULT 0,
+        files_updated INTEGER NOT NULL DEFAULT 0,
+        files_removed INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sync_history_account ON sync_history(storage_account_id, started_at DESC);
     `);
 
     schemaInitialized = true;
@@ -203,6 +219,7 @@ interface MemoryDb {
   virtualFolders: Map<string, any>;
   virtualFiles: Map<string, any>;
   oauthStates: Map<string, any>;
+  syncHistory: Map<string, any>;
 }
 
 const memoryDb: MemoryDb = {
@@ -212,6 +229,7 @@ const memoryDb: MemoryDb = {
   virtualFolders: new Map(),
   virtualFiles: new Map(),
   oauthStates: new Map(),
+  syncHistory: new Map(),
 };
 
 /**
@@ -650,6 +668,21 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     return { rows: [], rowCount: 1 };
   }
 
+  if (/SELECT .* FROM virtual_files WHERE id =/i.test(normalizedSql)) {
+    const fileId = params[0];
+    const file = memoryDb.virtualFiles.get(fileId);
+    return { rows: file ? [file as any] : [], rowCount: file ? 1 : 0 };
+  }
+
+  if (/SELECT .* FROM virtual_files WHERE storage_account_id = .* AND user_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const userId = params[1];
+    const files = Array.from(memoryDb.virtualFiles.values()).filter(
+      (f: any) => f.storage_account_id === accountId && f.user_id === userId
+    );
+    return { rows: files as any[], rowCount: files.length };
+  }
+
   if (/SELECT .* FROM virtual_files WHERE user_id =/i.test(normalizedSql)) {
     const userId = params[0];
     const files: any[] = [];
@@ -756,6 +789,24 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   // 6. Virtual Folders Queries
+  if (/SELECT .* FROM virtual_folders WHERE id =/i.test(normalizedSql)) {
+    const folderId = params[0];
+    const folder = memoryDb.virtualFolders.get(folderId);
+    return { rows: folder ? [folder as any] : [], rowCount: folder ? 1 : 0 };
+  }
+
+  if (/SELECT .* FROM virtual_folders WHERE storage_account_id = .* AND provider_folder_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const providerFolderId = params[1];
+    const folders: any[] = [];
+    for (const fol of memoryDb.virtualFolders.values()) {
+      if (fol.storage_account_id === accountId && fol.provider_folder_id === providerFolderId) {
+        folders.push(fol);
+      }
+    }
+    return { rows: folders as any[], rowCount: folders.length };
+  }
+
   if (/SELECT .* FROM virtual_folders WHERE storage_account_id =/i.test(normalizedSql)) {
     const accountId = params[0];
     const folders: any[] = [];
@@ -861,7 +912,30 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   // 7. Sync History
   if (/INSERT INTO sync_history/i.test(normalizedSql)) {
-    return { rows: [], rowCount: 1 };
+    const histRecord = {
+      id: params[0],
+      user_id: params[1],
+      storage_account_id: params[2],
+      status: params[3],
+      files_discovered: params[4] || 0,
+      files_added: params[5] || 0,
+      files_updated: params[6] || 0,
+      files_removed: params[7] || 0,
+      error_message: params[8] || null,
+      started_at: params[9] || new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+    };
+    memoryDb.syncHistory.set(histRecord.id, histRecord);
+    return { rows: [histRecord as any], rowCount: 1 };
+  }
+
+  if (/SELECT .* FROM sync_history/i.test(normalizedSql)) {
+    const list = Array.from(memoryDb.syncHistory.values());
+    if (params && params[0]) {
+      const filtered = list.filter(h => h.storage_account_id === params[0] || h.user_id === params[0]);
+      return { rows: filtered as any[], rowCount: filtered.length };
+    }
+    return { rows: list as any[], rowCount: list.length };
   }
 
   // Fallback generic empty

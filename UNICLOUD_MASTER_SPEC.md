@@ -1,7 +1,7 @@
 # UNICLOUD — MASTER ARCHITECTURE & SPECIFICATION DOCUMENT
 
-> **Version:** 1.2.1-phase2.1  
-> **Status:** Phase 2 & Phase 2.1 Complete — Google OAuth 2.0, Secure Drive Integration & Hardened Architecture Operational  
+> **Version:** 1.2.1-phase2.1.1  
+> **Status:** Phase 2.1.1 Complete — Sync Integrity & Pagination Reconciliation Hardened  
 > **Target Release:** Unified Virtual Cloud Storage  
 > **Author:** Lead Software Architect & Full-Stack Engineer  
 
@@ -107,8 +107,9 @@ export interface StorageProvider {
 ```
 
 ### Google Drive Implementation Roadmap
-- **Phase 0 (Current):** Interface contract established, `GoogleDriveProvider` scaffolded with strict `AppError(ErrorCode.NOT_IMPLEMENTED)` boundaries to guarantee no fake or simulated behavior.
-- **Phase 2:** Live integration with Google Drive API v3 (`about.get`, `files.list`, `files.create`, `files.delete`, etc.).
+- **Phase 2 & Phase 2.1.1 (Operational):** Live integration with Google Drive API v3 (`about.get` quota retrieval, `files.list` multi-page metadata synchronization, bounded pagination safety, two-pass virtual folder hierarchy resolution, database-authoritative ID upsert, guarded stale reconciliation).
+- **Phase 3 (Planned):** Incremental delta synchronization using Google Drive Changes API (`changes.list`, change tokens, Webhook notifications).
+- **Phase 4 (Planned):** Resumable chunked upload sessions (`files.create?uploadType=resumable`).
 
 ---
 
@@ -213,72 +214,98 @@ On failure, a structured error object is returned with HTTP status matching the 
 
 ---
 
-## 11. CURRENT IMPLEMENTATION STATUS (PHASE 0)
+## 11. CURRENT IMPLEMENTATION STATUS (PHASE 2.1.1)
 
 | Component | Status | Location | Notes |
 | :--- | :--- | :--- | :--- |
-| **Master Specification** | Complete | `/UNICLOUD_MASTER_SPEC.md` | Single source of architectural truth |
-| **PostgreSQL Schema DDL** | Complete | `/src/db/schema.sql` | Fully indexed, relational constraints |
-| **Database Entities (TS)** | Complete | `/src/db/schema.ts` | Strong TypeScript definitions |
-| **Domain Types** | Complete | `/src/types/*.ts` | Account, Filesystem, Provider, Upload, API |
-| **StorageProvider Interface**| Complete | `/src/types/provider.ts` | Strict provider contract |
-| **GoogleDriveProvider** | Scaffolded | `/src/server/providers/` | Complete method signatures, Phase 2 TODOs |
+| **Master Specification** | Complete | `/UNICLOUD_MASTER_SPEC.md` | Single source of architectural truth (v1.2.1-phase2.1.1) |
+| **PostgreSQL Schema DDL** | Complete | `/src/db/schema.sql` | Fully indexed, unique constraints, cascading foreign keys |
+| **Database Engine & Fallback** | Complete | `/src/db/client.ts` | Real PostgreSQL pool with zero-dependency in-memory dev engine |
+| **Authentication & Sessions** | Complete | `/src/server/services/AuthService.ts` | Bcrypt hashing, secure session tokens, cookie management |
+| **Token Encryption** | Complete | `/src/server/utils/encryption.ts` | AES-256-GCM authenticated encryption at rest |
+| **OAuth State & Replay Defense** | Complete | `/src/server/utils/oauthState.ts` | HMAC-SHA256 signatures, single-use atomic consumption, tenancy check |
+| **StorageProvider Interface**| Complete | `/src/types/provider.ts` | Strict provider contract with `paginationComplete` semantics |
+| **GoogleDriveProvider** | Operational | `/src/server/providers/` | OAuth exchange, `about.get` quota, multi-page `files.list` sync |
 | **Provider Registry** | Complete | `/src/server/providers/` | Factory for dynamic provider lookup |
-| **Domain Services** | Scaffolded | `/src/server/services/` | Account, Storage, File, Folder, Upload, Sync, Search |
-| **Upload Routing Engine** | Complete | `/src/server/services/` | Evaluates capacity & routing decisions |
-| **Error Handling & Logger**| Complete | `/src/server/utils/` | Redacting logger, typed AppError |
-| **Token Encryption** | Complete | `/src/server/utils/` | AES-256-GCM encryption at rest |
+| **SyncService** | Operational | `/src/server/services/SyncService.ts` | Two-pass folder resolution, RETURNING id, guarded stale reconciliation |
+| **Sync History Auditing** | Complete | `/src/db/client.ts` | Persistent `sync_history` logging completed vs partial runs |
+| **Account Management** | Complete | `/src/server/services/AccountService.ts` | Multi-account linking, token refresh, quota aggregation |
+| **Error Handling & Logger**| Complete | `/src/server/utils/` | Redacting logger, typed AppError hierarchy |
 | **Express + Vite Server** | Complete | `/server.ts` | Dual API & SPA server on port 3000 |
-| **UI Application Shell** | Complete | `/src/components/`, `/src/App.tsx` | Modern cloud storage interface |
-| **Dashboard View** | Complete | `/src/components/DashboardView.tsx` | Unified pool gauge & account breakdown |
-| **My Files View** | Complete | `/src/components/FilesView.tsx` | Grid/List toggle, breadcrumbs, search, origin badges |
-| **Storage Accounts View** | Complete | `/src/components/AccountsView.tsx` | Quota status, health checks, connect modal |
-| **Settings View** | Complete | `/src/components/SettingsView.tsx` | Upload routing & security controls |
-| **Spec Viewer** | Complete | `/src/components/SpecView.tsx` | In-app interactive architecture roadmap |
+| **UI Application Shell** | Complete | `/src/components/`, `/src/App.tsx` | Modern cloud storage interface with live auth and sync controls |
 
 ---
 
-## 12. PHASING ROADMAP & FUTURE SCOPE
+## 12. PHASING ROADMAP & IMPLEMENTATION BOUNDARIES
 
 ```
 Phase 0: Master Architecture & Foundation [COMPLETED]
    |
    v
-Phase 1: Database Setup & User Authentication
-   - PostgreSQL/Supabase connection integration
+Phase 1: Database Setup & User Authentication [COMPLETED]
+   - PostgreSQL/Supabase schema & client
    - User session management & login boundaries
    |
    v
-Phase 2: Google OAuth 2.0 & Drive API Connection
-   - Server-side multi-account OAuth flow
-   - Encrypted token storage & refresh lifecycle
-   - Live quota retrieval (`about.get`)
+Phase 2: Google OAuth 2.0 & Live Drive Integration [COMPLETED]
+   - Server-side multi-account OAuth flow & AES-256-GCM token storage
+   - Live quota retrieval (`about.get`) & metadata synchronization (`files.list`)
    |
    v
-Phase 3: Virtual Filesystem Synchronization
-   - Delta sync worker mapping Google Drive files to `virtual_files`
-   - Folder creation, rename, trash, and star operations
+Phase 2.1: Security Enforcement & Concurrency Hardening [COMPLETED]
+   - OAuth state HMAC-SHA256 signature hardening & replay protection
+   - Production secret validation & 256-bit AES-GCM enforcement
+   - Two-pass virtual folder hierarchy resolution & unique constraints
    |
    v
-Phase 4: Resumable Upload Engine & Routing
+Phase 2.1.1: Sync Integrity & Pagination Reconciliation Hardened [COMPLETED]
+   - PostgreSQL RETURNING id for authoritative folder ID resolution under concurrency
+   - Google Drive paginationComplete calculation (single, multi-page, maxPages safety)
+   - Guarded stale file reconciliation (skipped on truncated/partial syncs)
+   |
+   v
+Phase 3: Real-Time Delta Synchronization & Changes Worker [PLANNED]
+   - Background worker utilizing Google Drive Changes API (`changes.list`)
+   - Push notification webhooks & incremental page-token checkpoints
+   |
+   v
+Phase 4: Resumable Upload Engine & Dynamic Routing [PLANNED]
    - Chunked streaming direct to selected Google Drive account
-   - Dynamic routing by available quota
+   - Dynamic routing based on available quota & target folder affinity
    |
    v
-Phase 5: Unified Search, Filtering & Trash Recovery
-   - Full-text search across all accounts
-   - Cross-account file moves & duplicate detection
+Phase 5: Unified Search, Cross-Account Moves & Storage Lifecycle [PLANNED]
+   - Full-text search across connected drives
+   - Cross-account file moves, deduplication & trash recovery
 ```
 
 ---
 
-## 13. IMPORTANT NON-GOALS FOR PHASE 0
+## 13. IMPLEMENTATION STATUS CLASSIFICATION (PHASE 2.1.1)
 
-As mandated by Phase 0 discipline:
-- No real Google OAuth 2.0 token exchanges or client secrets required.
-- No live Google Drive v3 HTTP requests (cleanly deferred to Phase 2).
-- No file upload streaming (deferred to Phase 4).
-- No simulated or mock data masquerading as real connected accounts; all preview data in the UI is explicitly labelled as **"Phase 0 Design Preview / Architecture Demo"**.
+To ensure strict engineering integrity, the platform maintains a precise distinction between operational subsystems and future roadmap capabilities:
+
+### REAL & OPERATIONAL SUBSYSTEMS:
+- **PostgreSQL Persistence:** Complete relational schema (`users`, `user_sessions`, `storage_accounts`, `virtual_folders`, `virtual_files`, `sync_history`), foreign key constraints, indexes, and full development in-memory engine.
+- **Authentication & Session Management:** User signup, login, bcrypt password hashing, session tokens, and route protection.
+- **Google OAuth 2.0:** Secure server-side authorization code exchange, single-use signed state tokens with HMAC-SHA256, atomic replay protection, and tenant validation.
+- **Encrypted Google Credentials:** 256-bit AES-GCM encryption at rest with random IVs and authentication tags.
+- **Google Drive Quota Retrieval:** Live `about.get` integration, capacity/used/free byte computation, and storage pool aggregation.
+- **Google Drive Metadata Synchronization:** Live `files.list` synchronization querying files and folders across accounts.
+- **Complete Pagination with Bounded Safety:** Pagination loop iterating through `nextPageToken` until completion or reaching `maxPages`, computing `paginationComplete` explicitly.
+- **Virtual Folder Hierarchy Resolution:** Two-pass resolution (Pass 1: upsert folders, Pass 1.5: link parent folders, Pass 2: link files) using database-authoritative PostgreSQL `RETURNING id`.
+- **Idempotent Metadata Synchronization:** Relational unique constraints preventing duplicate folders or files across repeated sync executions.
+- **Guarded Stale Reconciliation:** Stale file reconciliation runs ONLY when `paginationComplete = true`, ensuring unvisited items are never incorrectly trashed during truncated syncs.
+- **Sync History Auditing:** Persistent audit logging in `sync_history` tracking sync duration, items added/updated/removed, and partial vs completed status.
+
+### NOT YET IMPLEMENTED (PLANNED FOR FUTURE PHASES):
+- **Full Phase 3 Delta Synchronization:** Real-time incremental synchronization via Google Drive Changes API (`changes.list`).
+- **Google Drive Changes API Worker:** Long-polling or Webhook-driven delta workers processing change tokens.
+- **Complete Filesystem Mutation Synchronization:** Creating, renaming, or deleting physical folders on upstream Google Drive accounts via virtual filesystem actions.
+- **Unified Cross-Account Search:** Full-text indexing and cross-drive query engine.
+- **Phase 4 Resumable Uploads:** Chunked streaming directly into the user's Google Drive accounts.
+- **Large-File Upload Streaming:** Direct-to-provider upload pipes.
+- **Additional Storage Providers:** OneDrive, Dropbox, Box, or S3 adapters.
 
 ---
 
@@ -450,6 +477,57 @@ A dedicated automated test suite (`src/test/phase2_1_hardening.test.ts`) verifie
 - **Pagination & Hierarchy:** Validates pagination options, two-pass folder linking, idempotent sync upsert behavior, and stale upstream file cleanup.
 
 All 12 automated test cases pass cleanly (`npm test`).
+
+---
+
+## 19. PHASE 2.1.1 CORRECTIVE PATCH: SYNC INTEGRITY & RECONCILIATION HARDENING
+
+A precision audit following Phase 2.1 identified two critical edge-case correctness requirements in metadata synchronization that were resolved in Phase 2.1.1:
+
+### 19.1 Problem 1: Virtual Folder Upsert Concurrency & Authoritative ID Resolution
+- **Identified Risk:** During virtual folder upsert operations in `SyncService.syncAccount`, generating a client-side UUID in Node.js and inserting it with `ON CONFLICT (storage_account_id, provider_folder_id) DO UPDATE` created a risk where an existing folder in the database already held a persistent UUID, but the in-memory mapping (`folderMap`) retained the transient client-generated UUID. Under concurrent synchronization passes or repeated syncs, this could desynchronize folder hierarchies and cause child folders/files to link to mismatched `parent_id` foreign keys.
+- **Implemented Fix:**
+  - Modified the virtual folder upsert query to execute `RETURNING id`.
+  - Stored the database-returned authoritative UUID into `folderMap.set(providerFolderId, authoritativeId)`.
+  - Preserved the relational constraint `uq_virtual_folders_account_provider` without weakening uniqueness guarantees.
+  - Ensured both new and pre-existing virtual folders resolve to their canonical PostgreSQL primary key.
+
+### 19.2 Problem 2: Pagination Safety Boundary & Guarded Stale Reconciliation
+- **Identified Risk:** When synchronizing large Google Drive accounts, pagination might terminate prematurely due to hitting `maxPages` safety caps, network timeouts, or partial page options (`fetchAllPages = false`). Previously, if a sync terminated before exhausting all pages, the stale-item reconciliation step (`UPDATE virtual_files SET is_trashed = TRUE WHERE synced_at < syncStartTime`) would mistakenly treat all unvisited files on subsequent pages as deleted upstream, causing severe data loss in the virtual filesystem.
+- **Implemented Fix:**
+  - Extended `ProviderFileListResult` with `paginationComplete: boolean`.
+  - In `GoogleDriveProvider.listFiles`, dynamically computed `paginationComplete`:
+    - `true` if and only if all available pages were consumed (`!currentPageToken && !res.data.nextPageToken`).
+    - `false` if `maxPages` was reached while `nextPageToken` remained, or if `fetchAllPages === false` with more items available.
+  - In `SyncService.syncAccount`, guarded the stale-item reconciliation step with:
+    ```typescript
+    if (listResult.paginationComplete) {
+      // Reconcile stale files safely
+    } else {
+      logger.warn(`Sync pagination truncated. Stale file reconciliation skipped.`);
+    }
+    ```
+  - Logged incomplete runs in `sync_history` with `status = 'partial'` and descriptive diagnostic error notes.
+
+### 19.3 Automated Verification Suite
+Phase 2.1.1 includes 14 dedicated test cases in `src/test/phase2_1_1_sync_integrity.test.ts` (bringing total project test coverage to 26 automated tests):
+1. New folder upsert returns and uses inserted database ID.
+2. Existing folder upsert uses database-authoritative ID on conflict instead of transient client UUID.
+3. `folderMap` stores the database-returned authoritative ID.
+4. Repeated synchronization maintains exact folder counts without duplicates.
+5. Parent-child folder relationships accurately link using authoritative IDs.
+6. Single-page sync completes with `paginationComplete = true`.
+7. Multi-page sync exhausts all pages and reports `paginationComplete = true`.
+8. All pages consumed sets `paginationComplete = true`.
+9. Reaching `maxPages` with remaining `nextPageToken` reports `paginationComplete = false`.
+10. Partial pagination (`paginationComplete = false`) safely skips stale reconciliation.
+11. Complete pagination (`paginationComplete = true`) executes stale reconciliation.
+12. Unvisited existing files are preserved intact after truncated syncs.
+13. `fetchAllPages = false` with additional pages reports `paginationComplete = false`.
+14. End-to-end `SyncService.syncAccount` preserves unvisited files and audits partial runs.
+
+All 26 automated test cases pass cleanly (`npm test`).
+
 
 
 

@@ -204,13 +204,21 @@ export class GoogleDriveProvider implements StorageProvider {
   }
 
   /**
+   * Instantiates Google Drive v3 client from authenticated OAuth2 client.
+   * Overridable in test suites for Google API boundary mocking.
+   */
+  protected getDriveClient(client: any): drive_v3.Drive {
+    return google.drive({ version: 'v3', auth: client });
+  }
+
+  /**
    * Queries Google Drive v3 `files.list` endpoint for file and folder metadata.
    */
   async listFiles(accessToken: string, options?: ProviderFileListOptions): Promise<ProviderFileListResult> {
     const client = this.getOAuth2Client();
     client.setCredentials({ access_token: accessToken });
 
-    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+    const drive: drive_v3.Drive = this.getDriveClient(client);
 
     try {
       // Build query string
@@ -273,9 +281,15 @@ export class GoogleDriveProvider implements StorageProvider {
         }
       } while (currentPageToken && pageCount < maxPages);
 
+      // Pagination is complete when all pages have been visited and no nextPageToken remains.
+      // If multi-page fetching was disabled (fetchAllPages: false) or pagination stopped due to maxPages with remaining items,
+      // paginationComplete is false to prevent treating partial results as full-drive reconciliation.
+      const paginationComplete = shouldFetchAllPages ? !currentPageToken : false;
+
       return {
         files: allFiles,
         nextPageToken: currentPageToken,
+        paginationComplete,
       };
     } catch (err: any) {
       if (err instanceof AppError) throw err;

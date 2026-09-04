@@ -39,6 +39,7 @@ export interface ProviderFileListResult {
   files: ProviderFileMetadata[];
   nextPageToken?: string;
   totalEstimate?: number;
+  paginationComplete: boolean;
 }
 
 export interface ResumableUploadSession {
