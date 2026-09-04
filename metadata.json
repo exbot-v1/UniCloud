@@ -1,0 +1,6 @@
+{
+  "name": "UniCloud",
+  "description": "Unified virtual cloud storage abstraction layer across multiple Google Drive accounts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

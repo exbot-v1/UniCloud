@@ -1,0 +1,180 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ * 
+ * UniCloud Primary Navigation Sidebar
+ */
+
+import React from 'react';
+import {
+  LayoutDashboard,
+  FolderSync,
+  Clock,
+  Star,
+  Trash2,
+  HardDrive,
+  BookOpen,
+  Settings,
+  Cloud,
+  Layers,
+  ChevronRight,
+} from 'lucide-react';
+import { cn, formatBytes } from '../lib/formatters';
+import { StoragePoolSummary } from '../types/account';
+
+export type ActiveNavTab =
+  | 'dashboard'
+  | 'files'
+  | 'recent'
+  | 'starred'
+  | 'trash'
+  | 'accounts'
+  | 'spec'
+  | 'settings';
+
+interface SidebarProps {
+  activeTab: ActiveNavTab;
+  onSelectTab: (tab: ActiveNavTab) => void;
+  poolSummary: StoragePoolSummary;
+  className?: string;
+  onOpenAddAccount: () => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({
+  activeTab,
+  onSelectTab,
+  poolSummary,
+  className,
+  onOpenAddAccount,
+}) => {
+  const navItems = [
+    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'files' as const, label: 'My Files', icon: FolderSync },
+    { id: 'recent' as const, label: 'Recent', icon: Clock },
+    { id: 'starred' as const, label: 'Starred', icon: Star },
+    { id: 'trash' as const, label: 'Trash', icon: Trash2 },
+    { id: 'accounts' as const, label: 'Storage Accounts', icon: HardDrive, badge: poolSummary.accounts.length },
+    { id: 'spec' as const, label: 'Architecture & Spec', icon: BookOpen, tag: 'Phase 0' },
+    { id: 'settings' as const, label: 'Settings', icon: Settings },
+  ];
+
+  return (
+    <aside
+      id="unicloud-sidebar"
+      className={cn(
+        'w-64 flex flex-col justify-between border-r border-white/10 bg-white/[0.03] backdrop-blur-xl p-4 select-none shrink-0 transition-all text-slate-200',
+        className
+      )}
+    >
+      {/* Brand & Logo */}
+      <div>
+        <div className="flex items-center gap-3 px-2 py-3 mb-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 text-white shadow-lg shadow-purple-500/20">
+            <Cloud className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="font-bold tracking-tight text-white text-lg">UniCloud</span>
+              <span className="rounded-full bg-purple-500/20 border border-purple-500/30 px-2 py-0.5 text-[10px] font-semibold text-purple-300 uppercase tracking-wider">
+                Virtual
+              </span>
+            </div>
+            <p className="text-xs text-slate-400">Multi-Account Drive Layer</p>
+          </div>
+        </div>
+
+        {/* Navigation Items */}
+        <nav className="space-y-1.5">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                id={`nav-item-${item.id}`}
+                onClick={() => onSelectTab(item.id)}
+                className={cn(
+                  'w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all text-left',
+                  isActive
+                    ? 'bg-white/10 text-white border border-white/15 shadow-sm backdrop-blur-sm'
+                    : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                )}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <span
+                    className={cn(
+                      'w-1.5 h-1.5 rounded-full transition-all',
+                      isActive ? 'bg-purple-400 shadow-[0_0_8px_rgba(192,132,252,0.8)]' : 'bg-transparent'
+                    )}
+                  />
+                  <Icon className={cn('h-4 w-4 shrink-0', isActive ? 'text-purple-300' : 'text-slate-500')} />
+                  <span className="truncate">{item.label}</span>
+                </div>
+                {item.badge !== undefined && (
+                  <span
+                    className={cn(
+                      'text-xs font-semibold px-2 py-0.5 rounded-full',
+                      isActive ? 'bg-white/20 text-white' : 'bg-white/5 text-slate-400 border border-white/10'
+                    )}
+                  >
+                    {item.badge}
+                  </span>
+                )}
+                {item.tag && (
+                  <span
+                    className={cn(
+                      'text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded',
+                      isActive ? 'bg-purple-500/30 text-purple-200' : 'bg-purple-500/15 text-purple-300 border border-purple-500/20'
+                    )}
+                  >
+                    {item.tag}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      {/* Storage Pool Widget & Account Action */}
+      <div className="mt-6 pt-4 border-t border-white/10 space-y-3">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur-md p-3.5 shadow-sm">
+          <div className="flex items-center justify-between text-xs mb-2">
+            <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+              <Layers className="h-3.5 w-3.5 text-purple-400" />
+              Storage Pool
+            </span>
+            <span className="font-medium text-purple-300">{poolSummary.usagePercentage}%</span>
+          </div>
+
+          {/* Progress Bar */}
+          <div className="h-2 w-full overflow-hidden rounded-full bg-white/10 mb-2">
+            <div
+              className="h-full bg-gradient-to-r from-purple-500 to-blue-500 rounded-full transition-all duration-500"
+              style={{ width: `${Math.min(100, poolSummary.usagePercentage)}%` }}
+            />
+          </div>
+
+          <div className="flex justify-between items-center text-[11px] text-slate-400">
+            <span>{formatBytes(poolSummary.totalUsedBytes)} used</span>
+            <span>{formatBytes(poolSummary.totalCapacityBytes)} pool</span>
+          </div>
+          
+          <div className="mt-2 pt-2 border-t border-white/10 text-[10px] text-slate-400 flex items-center justify-between">
+            <span>{poolSummary.accounts.length} Drives connected</span>
+            <span className="text-emerald-400 font-medium">{formatBytes(poolSummary.totalFreeBytes)} free</span>
+          </div>
+        </div>
+
+        <button
+          id="btn-add-account-sidebar"
+          onClick={onOpenAddAccount}
+          className="w-full flex items-center justify-between text-xs font-semibold text-purple-300 hover:text-white bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 rounded-xl px-3 py-2 transition-all shadow-xs"
+        >
+          <span>+ Connect Google Drive</span>
+          <ChevronRight className="h-3.5 w-3.5 text-purple-400" />
+        </button>
+      </div>
+    </aside>
+  );
+};
