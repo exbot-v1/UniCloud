@@ -2,11 +2,11 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * UniCloud Primary Application Shell (Phase 0)
+ * UniCloud Primary Application Shell (Phase 1)
  * Unified Virtual Cloud Storage Layer across multiple Google Drive accounts.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Sidebar, ActiveNavTab } from './components/Sidebar';
 import { Header } from './components/Header';
 import { DashboardView } from './components/DashboardView';
@@ -16,12 +16,15 @@ import { SettingsView } from './components/SettingsView';
 import { SpecView } from './components/SpecView';
 import { UploadModal } from './components/UploadModal';
 import { AddAccountModal } from './components/AddAccountModal';
+import { AuthModal } from './components/AuthModal';
 import {
   DEMO_STORAGE_ACCOUNTS,
   DEMO_VIRTUAL_FILES,
   DEMO_VIRTUAL_FOLDERS,
 } from './data/mockData';
-import { storageService } from './server/services/StorageService';
+import { calculateStoragePoolMetrics } from './lib/storageMetrics';
+import { StorageAccount, StoragePoolSummary } from './types/account';
+import { UserPublicProfile } from './types/auth';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveNavTab>('dashboard');
@@ -29,11 +32,125 @@ export default function App() {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isAddAccountModalOpen, setIsAddAccountModalOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
-  // Calculate storage pool summary dynamically
-  const poolSummary = useMemo(() => {
-    return storageService.calculatePoolMetrics(DEMO_STORAGE_ACCOUNTS);
+  // Authenticated user state
+  const [user, setUser] = useState<UserPublicProfile | null>(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+
+  // Real backend storage pool state
+  const [realAccounts, setRealAccounts] = useState<StorageAccount[] | null>(null);
+  const [realPoolSummary, setRealPoolSummary] = useState<StoragePoolSummary | null>(null);
+
+  // Check current session from /api/auth/me on mount
+  const checkSession = useCallback(async () => {
+    setLoadingAuth(true);
+    try {
+      const res = await fetch('/api/auth/me', {
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data) {
+          setUser(json.data);
+          loadUserData();
+          return;
+        }
+      }
+      setUser(null);
+    } catch {
+      setUser(null);
+    } finally {
+      setLoadingAuth(false);
+    }
   }, []);
+
+  const loadUserData = useCallback(async () => {
+    try {
+      const [accRes, poolRes] = await Promise.all([
+        fetch('/api/accounts', { credentials: 'include' }),
+        fetch('/api/storage/pool', { credentials: 'include' }),
+      ]);
+
+      if (accRes.ok) {
+        const accJson = await accRes.json();
+        if (accJson.success) {
+          setRealAccounts(accJson.data);
+        }
+      }
+
+      if (poolRes.ok) {
+        const poolJson = await poolRes.json();
+        if (poolJson.success) {
+          setRealPoolSummary(poolJson.data);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not load user accounts from database', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    checkSession();
+  }, [checkSession]);
+
+  // Listen for OAuth postMessage and URL params
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'GOOGLE_ACCOUNT_CONNECTED') {
+        loadUserData();
+      }
+    };
+    window.addEventListener('message', handleMessage);
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('oauth_success')) {
+      loadUserData();
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    return () => window.removeEventListener('message', handleMessage);
+  }, [loadUserData]);
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch (err) {
+      console.warn('Logout error', err);
+    } finally {
+      setUser(null);
+      setRealAccounts(null);
+      setRealPoolSummary(null);
+    }
+  };
+
+  const handleAuthSuccess = (authenticatedUser: UserPublicProfile) => {
+    setUser(authenticatedUser);
+    loadUserData();
+  };
+
+  // Determine if using demo accounts (fallback when 0 real accounts connected)
+  const isUsingDemoData = useMemo(() => {
+    return !realAccounts || realAccounts.length === 0;
+  }, [realAccounts]);
+
+  const accounts = useMemo(() => {
+    if (realAccounts && realAccounts.length > 0) {
+      return realAccounts;
+    }
+    return DEMO_STORAGE_ACCOUNTS;
+  }, [realAccounts]);
+
+  // Calculate storage pool summary dynamically or use backend response
+  const poolSummary = useMemo(() => {
+    if (realPoolSummary && realAccounts && realAccounts.length > 0) {
+      return realPoolSummary;
+    }
+    return calculateStoragePoolMetrics(accounts);
+  }, [realPoolSummary, realAccounts, accounts]);
 
   // Filter virtual files for specific views
   const recentFiles = useMemo(() => {
@@ -51,12 +168,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#050508] text-slate-100 font-sans antialiased relative selection:bg-purple-500/30 selection:text-purple-200">
-      {/* Frosted Glass Ambient Glowing Orbs */}
-      <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-purple-600/25 rounded-full blur-[130px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] right-[-5%] w-[600px] h-[600px] bg-blue-600/20 rounded-full blur-[150px] pointer-events-none" />
-      <div className="absolute top-[25%] right-[15%] w-[350px] h-[350px] bg-indigo-500/15 rounded-full blur-[110px] pointer-events-none" />
-
+    <div className="flex h-screen w-screen overflow-hidden bg-[#0e1117] text-slate-100 font-sans antialiased relative selection:bg-cyan-500/25 selection:text-cyan-200">
       {/* Navigation Sidebar (Desktop) */}
       <Sidebar
         activeTab={activeTab}
@@ -73,7 +185,7 @@ export default function App() {
       {isMobileSidebarOpen && (
         <div className="fixed inset-0 z-50 flex md:hidden">
           <div
-            className="fixed inset-0 bg-black/60 backdrop-blur-md"
+            className="fixed inset-0 bg-black/70"
             onClick={() => setIsMobileSidebarOpen(false)}
           />
           <Sidebar
@@ -87,7 +199,7 @@ export default function App() {
               setIsAddAccountModalOpen(true);
               setIsMobileSidebarOpen(false);
             }}
-            className="relative z-10 w-72 bg-[#080810]/95 backdrop-blur-2xl border-r border-white/10"
+            className="relative z-10 w-72 bg-[#12161f] border-r border-[#262c36]"
           />
         </div>
       )}
@@ -101,6 +213,9 @@ export default function App() {
           onSearchChange={setSearchQuery}
           onOpenUpload={() => setIsUploadModalOpen(true)}
           poolSummary={poolSummary}
+          user={user}
+          onOpenAuth={() => setIsAuthModalOpen(true)}
+          onLogout={handleLogout}
         />
 
         {/* Scrollable Main View */}
@@ -120,7 +235,7 @@ export default function App() {
             <FilesView
               folders={DEMO_VIRTUAL_FOLDERS}
               files={DEMO_VIRTUAL_FILES}
-              accounts={DEMO_STORAGE_ACCOUNTS}
+              accounts={accounts}
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
               tabTitle="My Files"
@@ -131,7 +246,7 @@ export default function App() {
             <FilesView
               folders={[]}
               files={recentFiles}
-              accounts={DEMO_STORAGE_ACCOUNTS}
+              accounts={accounts}
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
               tabTitle="Recent Files"
@@ -142,7 +257,7 @@ export default function App() {
             <FilesView
               folders={DEMO_VIRTUAL_FOLDERS.filter((f) => f.isStarred)}
               files={starredFiles}
-              accounts={DEMO_STORAGE_ACCOUNTS}
+              accounts={accounts}
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
               tabTitle="Starred Items"
@@ -153,7 +268,7 @@ export default function App() {
             <FilesView
               folders={[]}
               files={trashedFiles}
-              accounts={DEMO_STORAGE_ACCOUNTS}
+              accounts={accounts}
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
               tabTitle="Virtual Trash"
@@ -164,6 +279,8 @@ export default function App() {
             <AccountsView
               poolSummary={poolSummary}
               onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
+              onRefreshAccounts={loadUserData}
+              isDemoData={isUsingDemoData}
             />
           )}
 
@@ -172,6 +289,13 @@ export default function App() {
           {activeTab === 'settings' && <SettingsView />}
         </main>
       </div>
+
+      {/* User Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onAuthSuccess={handleAuthSuccess}
+      />
 
       {/* Upload Routing Simulator Modal */}
       <UploadModal
@@ -184,6 +308,9 @@ export default function App() {
       <AddAccountModal
         isOpen={isAddAccountModalOpen}
         onClose={() => setIsAddAccountModalOpen(false)}
+        user={user}
+        onOpenAuth={() => setIsAuthModalOpen(true)}
+        onAccountConnected={() => loadUserData()}
       />
     </div>
   );

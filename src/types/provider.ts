@@ -16,11 +16,12 @@ export interface ProviderFileMetadata {
   mimeType: string;
   sizeBytes: number;
   isFolder: boolean;
-  parentFolderId?: string;
+  parentFolderId?: string | null;
   createdAt: string;
   modifiedAt: string;
   webUrl?: string;
   md5Checksum?: string;
+  isStarred?: boolean;
   isTrashed?: boolean;
 }
 

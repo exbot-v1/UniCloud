@@ -19,7 +19,7 @@ const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12; // 96 bits recommended for GCM
 
 function getEncryptionKey(): Buffer {
-  const keyHex = process.env.ENCRYPTION_KEY;
+  const keyHex = process.env.ENCRYPTION_KEY || process.env.TOKEN_ENCRYPTION_KEY;
   if (!keyHex) {
     // Fallback development deterministic key with clear notice
     const fallbackHex = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -30,7 +30,7 @@ function getEncryptionKey(): Buffer {
   if (keyBuffer.length !== 32) {
     throw new AppError(
       ErrorCode.INTERNAL_ERROR,
-      'ENCRYPTION_KEY must be a 64-character hex string representing a 256-bit key.'
+      'ENCRYPTION_KEY or TOKEN_ENCRYPTION_KEY must be a 64-character hex string representing a 256-bit key.'
     );
   }
   return keyBuffer;

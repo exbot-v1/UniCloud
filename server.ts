@@ -7,6 +7,7 @@
  */
 
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './src/server/api/routes';
@@ -16,8 +17,9 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // JSON request body parser
+  // JSON request body parser & Cookie parser
   app.use(express.json());
+  app.use(cookieParser());
 
   // Mount UniCloud API Routes
   app.use('/api', apiRouter);

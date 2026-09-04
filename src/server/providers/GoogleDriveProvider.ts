@@ -2,16 +2,17 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * GoogleDriveProvider (Scaffold for Phase 0 Foundation)
+ * UniCloud GoogleDriveProvider (Phase 2 Implementation)
  * 
- * ARCHITECTURAL RULE:
- * This provider implements the common StorageProvider interface.
- * Real OAuth token exchanges, Google Drive API v3 calls, and multipart/resumable
- * streaming will be implemented in subsequent phases (Phase 2 & 3).
- * No fake operations or mock credentials are simulated here.
+ * Implements real Google OAuth 2.0 authentication, quota inspection via Drive v3 about.get,
+ * metadata listing via files.list, and token lifecycle management.
+ * 
+ * SECURITY MANDATE:
+ * Tokens and client secrets are never exposed to browser or logged in plaintext.
  */
 
-import { ProviderType, StorageQuota } from '../../types/account';
+import { google, drive_v3 } from 'googleapis';
+import { ProviderType, StorageQuota } from '../../types/account.js';
 import {
   StorageProvider,
   ProviderFileMetadata,
@@ -19,139 +20,490 @@ import {
   ProviderFileListResult,
   ResumableUploadSession,
   ProviderHealthCheckResult,
-} from '../../types/provider';
-import { AppError } from '../utils/errors';
-import { ErrorCode } from '../../types/api';
+} from '../../types/provider.js';
+import { AppError } from '../utils/errors.js';
+import { ErrorCode } from '../../types/api.js';
+import { logger } from '../utils/logger.js';
+
+type OAuth2Client = InstanceType<typeof google.auth.OAuth2>;
 
 export class GoogleDriveProvider implements StorageProvider {
   public readonly providerType = ProviderType.GOOGLE_DRIVE;
 
   /**
-   * Refreshes OAuth 2.0 access token using the stored refresh token.
-   * Implementation scheduled for Phase 2: Google OAuth & Drive Authentication.
+   * Narrowest Google OAuth scopes required for UniCloud multi-account storage pooling
+   * and virtual filesystem metadata synchronization.
    */
-  async refreshAuthentication(_refreshToken: string): Promise<{ accessToken: string; expiresInSeconds: number }> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.refreshAuthentication is scheduled for implementation in Phase 2.'
-    );
+  public static readonly REQUIRED_SCOPES = [
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'https://www.googleapis.com/auth/drive.metadata.readonly',
+    'https://www.googleapis.com/auth/drive.file',
+  ];
+
+  /**
+   * Instantiates Google OAuth2 client from server environment variables.
+   * Throws configuration error if credentials have not been configured.
+   */
+  public getOAuth2Client(redirectUri?: string): OAuth2Client {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      throw new AppError(
+        ErrorCode.CONFIGURATION_ERROR,
+        'Google OAuth credentials (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET) must be configured in environment variables to link live Google accounts.',
+        503
+      );
+    }
+
+    const defaultRedirect = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/accounts/google/callback';
+    return new google.auth.OAuth2(clientId, clientSecret, redirectUri || defaultRedirect);
   }
 
   /**
-   * Queries Google Drive v3 `about.get` endpoint for storage quota details.
-   * Implementation scheduled for Phase 2: Quota Retrieval & Account Sync.
+   * Generates the Google OAuth 2.0 consent authorization URL.
+   * Requires offline access and consent prompt to guarantee a refresh_token is returned.
    */
-  async getStorageQuota(_accessToken: string): Promise<StorageQuota> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.getStorageQuota is scheduled for implementation in Phase 2.'
-    );
+  public getAuthorizationUrl(state: string, redirectUri?: string): string {
+    const client = this.getOAuth2Client(redirectUri);
+    return client.generateAuthUrl({
+      access_type: 'offline',
+      prompt: 'consent',
+      scope: GoogleDriveProvider.REQUIRED_SCOPES,
+      state,
+      include_granted_scopes: true,
+    });
   }
 
   /**
-   * Queries Google Drive v3 `files.list` endpoint.
-   * Implementation scheduled for Phase 3: Filesystem Synchronization.
+   * Exchanges an authorization code for tokens and fetches the Google user profile.
    */
-  async listFiles(_accessToken: string, _options?: ProviderFileListOptions): Promise<ProviderFileListResult> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.listFiles is scheduled for implementation in Phase 3.'
-    );
+  public async exchangeAuthCode(
+    code: string,
+    redirectUri?: string
+  ): Promise<{
+    tokens: any;
+    profile: {
+      id: string;
+      email: string;
+      name: string | null;
+      avatarUrl: string | null;
+    };
+  }> {
+    const client = this.getOAuth2Client(redirectUri);
+
+    try {
+      const { tokens } = await client.getToken(code);
+      client.setCredentials(tokens);
+
+      const oauth2 = google.oauth2({ version: 'v2', auth: client as any });
+      const userinfoRes = await oauth2.userinfo.get();
+      const info = userinfoRes.data;
+
+      if (!info.id || !info.email) {
+        throw new AppError(
+          ErrorCode.OAUTH_ERROR,
+          'Failed to retrieve essential Google account identity (email/id) during OAuth exchange.',
+          400
+        );
+      }
+
+      return {
+        tokens,
+        profile: {
+          id: info.id,
+          email: info.email,
+          name: info.name || null,
+          avatarUrl: info.picture || null,
+        },
+      };
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      logger.error('Google OAuth exchange error', { error: err.message });
+      throw new AppError(
+        ErrorCode.OAUTH_ERROR,
+        `Google authorization exchange failed: ${err.message}`,
+        400
+      );
+    }
   }
 
   /**
-   * Queries Google Drive v3 `files.get` endpoint.
-   * Implementation scheduled for Phase 3.
+   * Validates or refreshes access credentials using the account's refresh_token.
    */
-  async getFileMetadata(_accessToken: string, _providerFileId: string): Promise<ProviderFileMetadata> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.getFileMetadata is scheduled for implementation in Phase 3.'
-    );
+  async refreshAuthentication(
+    refreshToken: string
+  ): Promise<{ accessToken: string; expiresInSeconds: number }> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ refresh_token: refreshToken });
+
+    try {
+      const { credentials } = await client.refreshAccessToken();
+      const accessToken = credentials.access_token;
+      if (!accessToken) {
+        throw new AppError(ErrorCode.TOKEN_EXPIRED, 'Google did not return an access token.');
+      }
+
+      // Default Google access token lifespan is 3600 seconds (1 hour)
+      const expiresInSeconds = credentials.expiry_date
+        ? Math.max(60, Math.floor((credentials.expiry_date - Date.now()) / 1000))
+        : 3600;
+
+      return { accessToken, expiresInSeconds };
+    } catch (err: any) {
+      logger.error('Failed to refresh Google OAuth token', { error: err.message });
+      throw new AppError(
+        ErrorCode.TOKEN_EXPIRED,
+        `Failed to refresh Google Drive access token: ${err.message}`,
+        401
+      );
+    }
   }
 
   /**
-   * Creates a folder via Google Drive v3 `files.create` with mimeType 'application/vnd.google-apps.folder'.
-   * Implementation scheduled for Phase 3.
+   * Queries Google Drive v3 `about.get` endpoint for real storage quota.
    */
-  async createFolder(_accessToken: string, _name: string, _parentFolderId?: string): Promise<ProviderFileMetadata> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.createFolder is scheduled for implementation in Phase 3.'
-    );
+  async getStorageQuota(accessToken: string): Promise<StorageQuota> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      const res = await drive.about.get({
+        fields: 'storageQuota,user',
+      });
+
+      const quota = res.data.storageQuota;
+      if (!quota) {
+        throw new AppError(ErrorCode.PROVIDER_ERROR, 'Google Drive API did not return storageQuota fields.');
+      }
+
+      // Note: limit can be missing for unlimited Google Workspace accounts
+      const totalBytes = quota.limit ? Number(quota.limit) : 0;
+      const usedBytes = quota.usage ? Number(quota.usage) : 0;
+      const freeBytes = totalBytes > 0 ? Math.max(0, totalBytes - usedBytes) : 0;
+      const usagePercentage = totalBytes > 0 ? Math.min(100, Math.round((usedBytes / totalBytes) * 100)) : 0;
+
+      return {
+        totalBytes,
+        usedBytes,
+        freeBytes,
+        usagePercentage,
+      };
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      logger.error('Failed to fetch Google Drive storage quota', { error: err.message });
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Google Drive quota query failed: ${err.message}`,
+        502
+      );
+    }
   }
 
   /**
-   * Initiates a resumable upload session with Google Drive API v3 via:
-   * POST https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable
-   * Implementation scheduled for Phase 4: Large File Uploads & Resumable Streams.
+   * Queries Google Drive v3 `files.list` endpoint for file and folder metadata.
    */
-  async initiateResumableUpload(
-    _accessToken: string,
-    _metadata: { name: string; mimeType: string; sizeBytes: number; parentFolderId?: string }
-  ): Promise<ResumableUploadSession> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.initiateResumableUpload is scheduled for implementation in Phase 4.'
-    );
+  async listFiles(accessToken: string, options?: ProviderFileListOptions): Promise<ProviderFileListResult> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      // Build query string
+      const qParts: string[] = [];
+
+      if (options?.includeTrashed) {
+        // Include both or only trashed
+      } else {
+        qParts.push('trashed = false');
+      }
+
+      if (options?.folderId) {
+        qParts.push(`'${options.folderId}' in parents`);
+      }
+
+      if (options?.query) {
+        qParts.push(`name contains '${options.query.replace(/'/g, "\\'")}'`);
+      }
+
+      const q = qParts.length > 0 ? qParts.join(' and ') : undefined;
+
+      const res = await drive.files.list({
+        q,
+        pageSize: Math.min(options?.pageSize || 100, 100),
+        pageToken: options?.pageToken,
+        fields: 'nextPageToken, files(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred)',
+        orderBy: 'folder,modifiedTime desc',
+      });
+
+      const files: ProviderFileMetadata[] = (res.data.files || []).map((f) => ({
+        providerFileId: f.id || '',
+        name: f.name || 'Untitled',
+        mimeType: f.mimeType || 'application/octet-stream',
+        sizeBytes: f.size ? Number(f.size) : 0,
+        parentFolderId: f.parents && f.parents.length > 0 ? f.parents[0] : null,
+        isFolder: f.mimeType === 'application/vnd.google-apps.folder',
+        webUrl: f.webViewLink || undefined,
+        md5Checksum: f.md5Checksum || undefined,
+        isStarred: Boolean(f.starred),
+        isTrashed: Boolean(f.trashed),
+        createdAt: f.createdTime || new Date().toISOString(),
+        modifiedAt: f.modifiedTime || new Date().toISOString(),
+      }));
+
+      return {
+        files,
+        nextPageToken: res.data.nextPageToken || undefined,
+      };
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      logger.error('Failed to list Google Drive files', { error: err.message });
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Google Drive files query failed: ${err.message}`,
+        502
+      );
+    }
   }
 
   /**
-   * Deletes a file or sets trashed: true via Google Drive v3.
-   * Implementation scheduled for Phase 3.
+   * Queries Google Drive v3 `files.get` endpoint for single file metadata.
    */
-  async deleteFile(_accessToken: string, _providerFileId: string, _permanent?: boolean): Promise<void> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.deleteFile is scheduled for implementation in Phase 3.'
-    );
-  }
+  async getFileMetadata(accessToken: string, providerFileId: string): Promise<ProviderFileMetadata> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
 
-  /**
-   * Renames a file via Google Drive v3 `files.update`.
-   * Implementation scheduled for Phase 3.
-   */
-  async renameFile(_accessToken: string, _providerFileId: string, _newName: string): Promise<ProviderFileMetadata> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.renameFile is scheduled for implementation in Phase 3.'
-    );
-  }
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
 
-  /**
-   * Moves a file by updating parents via Google Drive v3 `files.update`.
-   * Implementation scheduled for Phase 3.
-   */
-  async moveFile(
-    _accessToken: string,
-    _providerFileId: string,
-    _targetParentFolderId: string
-  ): Promise<ProviderFileMetadata> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.moveFile is scheduled for implementation in Phase 3.'
-    );
-  }
+    try {
+      const res = await drive.files.get({
+        fileId: providerFileId,
+        fields: 'id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred',
+      });
 
-  /**
-   * Obtains a temporary download or webContentLink.
-   * Implementation scheduled for Phase 3.
-   */
-  async getDownloadUrl(_accessToken: string, _providerFileId: string): Promise<string> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.getDownloadUrl is scheduled for implementation in Phase 3.'
-    );
+      const f = res.data;
+      return {
+        providerFileId: f.id || providerFileId,
+        name: f.name || 'Untitled',
+        mimeType: f.mimeType || 'application/octet-stream',
+        sizeBytes: f.size ? Number(f.size) : 0,
+        parentFolderId: f.parents && f.parents.length > 0 ? f.parents[0] : null,
+        isFolder: f.mimeType === 'application/vnd.google-apps.folder',
+        webUrl: f.webViewLink || undefined,
+        md5Checksum: f.md5Checksum || undefined,
+        isStarred: Boolean(f.starred),
+        isTrashed: Boolean(f.trashed),
+        createdAt: f.createdTime || new Date().toISOString(),
+        modifiedAt: f.modifiedTime || new Date().toISOString(),
+      };
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      logger.error('Failed to get Google Drive file metadata', { error: err.message });
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Google Drive file lookup failed: ${err.message}`,
+        502
+      );
+    }
   }
 
   /**
    * Performs an API ping/health check.
-   * Implementation scheduled for Phase 2.
    */
-  async checkHealth(_accessToken: string): Promise<ProviderHealthCheckResult> {
+  async checkHealth(accessToken: string): Promise<ProviderHealthCheckResult> {
+    const startTime = Date.now();
+    try {
+      const client = this.getOAuth2Client();
+      client.setCredentials({ access_token: accessToken });
+      const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+      await drive.about.get({ fields: 'user' });
+
+      return {
+        isHealthy: true,
+        latencyMs: Date.now() - startTime,
+        statusMessage: 'Google Drive API v3 connected and responsive',
+      };
+    } catch (err: any) {
+      return {
+        isHealthy: false,
+        latencyMs: Date.now() - startTime,
+        statusMessage: err.message || 'Health check failed',
+      };
+    }
+  }
+
+  /**
+   * Revokes an OAuth token at Google servers.
+   */
+  async revokeToken(token: string): Promise<void> {
+    try {
+      const client = this.getOAuth2Client();
+      await client.revokeToken(token);
+      logger.info('Successfully revoked Google OAuth token upstream.');
+    } catch (err: any) {
+      // Non-fatal: even if upstream revocation returns 400 (e.g. already revoked), local account is cleared
+      logger.warn('Google token revocation warning (non-fatal)', { error: err.message });
+    }
+  }
+
+  /**
+   * Creates a folder in Google Drive.
+   */
+  async createFolder(accessToken: string, name: string, parentFolderId?: string): Promise<ProviderFileMetadata> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      const fileMetadata: drive_v3.Schema$File = {
+        name,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: parentFolderId ? [parentFolderId] : undefined,
+      };
+
+      const res = await drive.files.create({
+        requestBody: fileMetadata,
+        fields: 'id, name, mimeType, parents, createdTime, modifiedTime',
+      });
+
+      const f = res.data;
+      return {
+        providerFileId: f.id || '',
+        name: f.name || name,
+        mimeType: 'application/vnd.google-apps.folder',
+        sizeBytes: 0,
+        parentFolderId: f.parents && f.parents.length > 0 ? f.parents[0] : null,
+        isFolder: true,
+        isStarred: false,
+        isTrashed: false,
+        createdAt: f.createdTime || new Date().toISOString(),
+        modifiedAt: f.modifiedTime || new Date().toISOString(),
+      };
+    } catch (err: any) {
+      throw new AppError(ErrorCode.PROVIDER_ERROR, `Failed to create Google Drive folder: ${err.message}`, 502);
+    }
+  }
+
+  /**
+   * Initiates a resumable upload session (prepared for Phase 4).
+   */
+  async initiateResumableUpload(): Promise<ResumableUploadSession> {
     throw new AppError(
       ErrorCode.NOT_IMPLEMENTED,
-      'GoogleDriveProvider.checkHealth is scheduled for implementation in Phase 2.'
+      'Resumable upload session initialization is scheduled for Phase 4: Resumable Upload Engine.',
+      501
     );
+  }
+
+  /**
+   * Deletes or trashes a file in Google Drive.
+   */
+  async deleteFile(accessToken: string, providerFileId: string, permanent: boolean = false): Promise<void> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      if (permanent) {
+        await drive.files.delete({ fileId: providerFileId });
+      } else {
+        await drive.files.update({
+          fileId: providerFileId,
+          requestBody: { trashed: true },
+        });
+      }
+    } catch (err: any) {
+      throw new AppError(ErrorCode.PROVIDER_ERROR, `Failed to delete file from Google Drive: ${err.message}`, 502);
+    }
+  }
+
+  /**
+   * Renames a file in Google Drive.
+   */
+  async renameFile(accessToken: string, providerFileId: string, newName: string): Promise<ProviderFileMetadata> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      const res = await drive.files.update({
+        fileId: providerFileId,
+        requestBody: { name: newName },
+        fields: 'id, name, mimeType, size, parents, createdTime, modifiedTime',
+      });
+
+      const f = res.data;
+      return {
+        providerFileId: f.id || providerFileId,
+        name: f.name || newName,
+        mimeType: f.mimeType || 'application/octet-stream',
+        sizeBytes: f.size ? Number(f.size) : 0,
+        parentFolderId: f.parents && f.parents.length > 0 ? f.parents[0] : null,
+        isFolder: f.mimeType === 'application/vnd.google-apps.folder',
+        isStarred: Boolean(f.starred),
+        isTrashed: Boolean(f.trashed),
+        createdAt: f.createdTime || new Date().toISOString(),
+        modifiedAt: f.modifiedTime || new Date().toISOString(),
+      };
+    } catch (err: any) {
+      throw new AppError(ErrorCode.PROVIDER_ERROR, `Failed to rename Google Drive file: ${err.message}`, 502);
+    }
+  }
+
+  /**
+   * Moves a file to a new parent folder in Google Drive.
+   */
+  async moveFile(accessToken: string, providerFileId: string, targetFolderId: string): Promise<ProviderFileMetadata> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      // Retrieve existing parents
+      const file = await drive.files.get({
+        fileId: providerFileId,
+        fields: 'parents',
+      });
+
+      const previousParents = (file.data.parents || []).join(',');
+
+      const res = await drive.files.update({
+        fileId: providerFileId,
+        addParents: targetFolderId,
+        removeParents: previousParents,
+        fields: 'id, name, mimeType, size, parents, createdTime, modifiedTime',
+      });
+
+      const f = res.data;
+      return {
+        providerFileId: f.id || providerFileId,
+        name: f.name || 'Untitled',
+        mimeType: f.mimeType || 'application/octet-stream',
+        sizeBytes: f.size ? Number(f.size) : 0,
+        parentFolderId: targetFolderId,
+        isFolder: f.mimeType === 'application/vnd.google-apps.folder',
+        isStarred: Boolean(f.starred),
+        isTrashed: Boolean(f.trashed),
+        createdAt: f.createdTime || new Date().toISOString(),
+        modifiedAt: f.modifiedTime || new Date().toISOString(),
+      };
+    } catch (err: any) {
+      throw new AppError(ErrorCode.PROVIDER_ERROR, `Failed to move Google Drive file: ${err.message}`, 502);
+    }
+  }
+
+  /**
+   * Retrieves web link or download URL for a file.
+   */
+  async getDownloadUrl(accessToken: string, providerFileId: string): Promise<string> {
+    const metadata = await this.getFileMetadata(accessToken, providerFileId);
+    if (metadata.webUrl) {
+      return metadata.webUrl;
+    }
+    return `https://drive.google.com/uc?id=${providerFileId}&export=download`;
   }
 }

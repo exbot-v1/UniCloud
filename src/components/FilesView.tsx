@@ -110,7 +110,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
   return (
     <div id="files-view" className="space-y-6 max-w-7xl mx-auto pb-12">
       {/* Top Action Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#262c36] pb-4">
         {/* Breadcrumb Navigation */}
         <div className="flex items-center gap-2 text-sm text-slate-300 overflow-x-auto">
           <button
@@ -133,14 +133,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
         {/* Controls: Filter, View Toggle, Upload */}
         <div className="flex items-center gap-2.5 flex-wrap">
           {/* Category Filter */}
-          <div className="flex items-center bg-white/[0.04] border border-white/10 p-1 rounded-xl text-xs font-medium text-slate-400">
+          <div className="flex items-center bg-[#10141b] border border-[#262c36] p-1 rounded-xl text-xs font-medium text-slate-400">
             {['all', 'documents', 'images', 'archives'].map((cat) => (
               <button
                 key={cat}
                 onClick={() => setCategoryFilter(cat)}
                 className={cn(
                   'px-2.5 py-1 rounded-lg capitalize transition-all',
-                  categoryFilter === cat ? 'bg-white/15 text-white font-semibold shadow-xs' : 'hover:text-slate-200'
+                  categoryFilter === cat ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-semibold' : 'hover:text-slate-200'
                 )}
               >
                 {cat}
@@ -149,13 +149,13 @@ export const FilesView: React.FC<FilesViewProps> = ({
           </div>
 
           {/* View Mode Switcher */}
-          <div className="flex items-center bg-white/[0.04] border border-white/10 p-1 rounded-xl">
+          <div className="flex items-center bg-[#10141b] border border-[#262c36] p-1 rounded-xl">
             <button
               onClick={() => setViewMode('list')}
               aria-label="List View"
               className={cn(
                 'p-1.5 rounded-lg text-slate-400 transition-all',
-                viewMode === 'list' ? 'bg-white/15 text-white shadow-xs' : 'hover:text-slate-200'
+                viewMode === 'list' ? 'bg-[#1a202c] text-cyan-300 shadow-xs' : 'hover:text-slate-200'
               )}
             >
               <List className="h-4 w-4" />
@@ -165,7 +165,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
               aria-label="Grid View"
               className={cn(
                 'p-1.5 rounded-lg text-slate-400 transition-all',
-                viewMode === 'grid' ? 'bg-white/15 text-white shadow-xs' : 'hover:text-slate-200'
+                viewMode === 'grid' ? 'bg-[#1a202c] text-cyan-300 shadow-xs' : 'hover:text-slate-200'
               )}
             >
               <LayoutGrid className="h-4 w-4" />
@@ -175,17 +175,17 @@ export const FilesView: React.FC<FilesViewProps> = ({
           {/* Actions */}
           <button
             onClick={() => setNoticeModal('Folder creation will be connected to the PostgreSQL virtual_folders table in Phase 3.')}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white/10 hover:bg-white/15 text-slate-200 border border-white/15 rounded-xl transition-all shadow-xs backdrop-blur-md"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-[#1a202c] hover:bg-[#222a38] text-slate-200 border border-[#262c36] rounded-xl transition-all shadow-xs"
           >
-            <Plus className="h-3.5 w-3.5 text-purple-400" />
+            <Plus className="h-3.5 w-3.5 text-cyan-400" />
             <span>New Folder</span>
           </button>
 
           <button
             onClick={onOpenUpload}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white rounded-xl shadow-lg shadow-purple-500/25 border border-purple-400/30 transition-all"
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl shadow-md shadow-cyan-950/50 border border-cyan-400/40 transition-all"
           >
-            <Upload className="h-3.5 w-3.5" />
+            <Upload className="h-3.5 w-3.5 text-slate-950" />
             <span>Upload</span>
           </button>
         </div>
@@ -205,14 +205,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
                     key={folder.id}
                     onClick={() => setCurrentFolderId(currentFolderId === folder.id ? null : folder.id)}
                     className={cn(
-                      'p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between backdrop-blur-md',
+                      'p-4 rounded-xl border transition-all cursor-pointer flex items-center justify-between',
                       currentFolderId === folder.id
-                        ? 'border-purple-500 bg-purple-500/15 shadow-md ring-1 ring-purple-500/50'
-                        : 'border-white/10 bg-white/[0.04] hover:border-purple-400/40 hover:bg-white/[0.06]'
+                        ? 'border-cyan-500 bg-cyan-950/40 shadow-sm ring-1 ring-cyan-500/50'
+                        : 'border-[#262c36] bg-[#161b24] hover:border-cyan-500/40 hover:bg-[#1a202c]'
                     )}
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="p-2.5 rounded-xl bg-purple-500/20 text-purple-300 shrink-0 border border-purple-500/30">
+                      <div className="p-2.5 rounded-xl bg-cyan-500/15 text-cyan-400 shrink-0 border border-cyan-500/30">
                         <Folder className="h-5 w-5" />
                       </div>
                       <div className="min-w-0">
@@ -240,17 +240,17 @@ export const FilesView: React.FC<FilesViewProps> = ({
             </div>
 
             {filteredFiles.length === 0 ? (
-              <div className="p-12 text-center rounded-3xl border border-dashed border-white/15 bg-white/[0.02]">
+              <div className="p-12 text-center rounded-2xl border border-dashed border-[#262c36] bg-[#161b24]">
                 <FileText className="h-8 w-8 text-slate-500 mx-auto mb-2" />
                 <p className="text-sm font-semibold text-slate-300">No files found</p>
                 <p className="text-xs text-slate-500 mt-1">Try changing your search or filter criteria.</p>
               </div>
             ) : viewMode === 'list' ? (
               /* LIST VIEW */
-              <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur-xl overflow-hidden shadow-xl">
+              <div className="rounded-xl border border-[#262c36] bg-[#161b24] overflow-hidden shadow-sm">
                 <table className="w-full text-left text-xs">
                   <thead>
-                    <tr className="border-b border-white/10 bg-white/[0.02] text-slate-400 font-semibold">
+                    <tr className="border-b border-[#262c36] bg-[#10141b] text-slate-400 font-semibold">
                       <th className="py-3 pl-4">Name</th>
                       <th className="py-3">Physical Storage Host</th>
                       <th className="py-3">Size</th>
@@ -258,7 +258,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                       <th className="py-3 pr-4 text-right">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-white/5">
+                  <tbody className="divide-y divide-[#262c36]/60">
                     {filteredFiles.map((file) => {
                       const account = accounts.find((a) => a.id === file.storageAccountId);
                       const isSelected = selectedFile?.id === file.id;
@@ -268,7 +268,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                           onClick={() => setSelectedFile(isSelected ? null : file)}
                           className={cn(
                             'cursor-pointer transition-colors select-none',
-                            isSelected ? 'bg-purple-500/20 text-white' : 'hover:bg-white/[0.04]'
+                            isSelected ? 'bg-cyan-950/50 text-white' : 'hover:bg-[#1a202c]'
                           )}
                         >
                           <td className="py-3 pl-4 flex items-center gap-3">
@@ -276,8 +276,8 @@ export const FilesView: React.FC<FilesViewProps> = ({
                             <span className="font-semibold text-white truncate max-w-xs">{file.name}</span>
                           </td>
                           <td className="py-3">
-                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white/5 text-slate-300 text-[11px] font-medium border border-white/10">
-                              <HardDrive className="h-3 w-3 text-purple-400" />
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#10141b] text-slate-300 text-[11px] font-medium border border-[#262c36]">
+                              <HardDrive className="h-3 w-3 text-cyan-400" />
                               {account?.email || file.storageAccountId}
                             </span>
                           </td>
@@ -291,7 +291,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => e.stopPropagation()}
-                                  className="text-slate-400 hover:text-purple-300 p-1 transition-colors"
+                                  className="text-slate-400 hover:text-cyan-300 p-1 transition-colors"
                                   title="View on Google Drive"
                                 >
                                   <ExternalLink className="h-3.5 w-3.5" />
@@ -325,23 +325,23 @@ export const FilesView: React.FC<FilesViewProps> = ({
                       key={file.id}
                       onClick={() => setSelectedFile(isSelected ? null : file)}
                       className={cn(
-                        'p-4 rounded-2xl border bg-white/[0.04] backdrop-blur-md cursor-pointer transition-all space-y-3',
+                        'p-4 rounded-xl border bg-[#161b24] cursor-pointer transition-all space-y-3',
                         isSelected
-                          ? 'border-purple-500 ring-2 ring-purple-500/30 bg-purple-500/15 shadow-md'
-                          : 'border-white/10 hover:border-purple-400/40 hover:bg-white/[0.06]'
+                          ? 'border-cyan-500 ring-2 ring-cyan-500/30 bg-cyan-950/40 shadow-sm'
+                          : 'border-[#262c36] hover:border-cyan-500/40 hover:bg-[#1a202c]'
                       )}
                     >
                       <div className="flex items-start justify-between">
-                        <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">{getFileIcon(file.mimeType)}</div>
+                        <div className="p-2.5 rounded-xl bg-[#10141b] border border-[#262c36]">{getFileIcon(file.mimeType)}</div>
                         <span className="text-[11px] font-semibold text-slate-400">{formatBytes(file.sizeBytes)}</span>
                       </div>
                       <div>
                         <p className="text-xs font-bold text-white truncate">{file.name}</p>
                         <p className="text-[11px] text-slate-400 mt-0.5">{formatDate(file.modifiedAt)}</p>
                       </div>
-                      <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px]">
+                      <div className="pt-2 border-t border-[#262c36] flex items-center justify-between text-[11px]">
                         <span className="truncate max-w-[150px] text-slate-400 flex items-center gap-1">
-                          <HardDrive className="h-3 w-3 text-purple-400 shrink-0" />
+                          <HardDrive className="h-3 w-3 text-cyan-400 shrink-0" />
                           {account?.email.split('@')[0]}
                         </span>
                         {file.webUrl && (
@@ -350,7 +350,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={(e) => e.stopPropagation()}
-                            className="text-purple-300 hover:text-purple-200 transition-colors"
+                            className="text-cyan-400 hover:text-cyan-300 transition-colors"
                           >
                             <ExternalLink className="h-3 w-3" />
                           </a>
@@ -366,21 +366,21 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
         {/* Right 1 col: File Inspection & Mapping Drawer */}
         {selectedFile && (
-          <div className="rounded-3xl border border-white/10 bg-white/[0.05] backdrop-blur-2xl p-5 shadow-2xl space-y-5 h-fit lg:sticky lg:top-24 text-slate-200">
+          <div className="rounded-2xl border border-[#262c36] bg-[#161b24] p-5 shadow-md space-y-5 h-fit lg:sticky lg:top-24 text-slate-200">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-2">
-                <Info className="h-4 w-4 text-purple-400" />
+                <Info className="h-4 w-4 text-cyan-400" />
                 <h4 className="text-sm font-bold text-white">Virtual Mapping Detail</h4>
               </div>
               <button
                 onClick={() => setSelectedFile(null)}
-                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-[#10141b] transition-colors"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="p-3.5 bg-white/[0.04] rounded-2xl border border-white/10 space-y-1">
+            <div className="p-3.5 bg-[#10141b] rounded-xl border border-[#262c36] space-y-1">
               <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Virtual File Name</p>
               <p className="text-xs font-bold text-white break-words">{selectedFile.name}</p>
             </div>
@@ -388,7 +388,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
             <div className="space-y-3 text-xs">
               <div>
                 <p className="text-slate-400 font-medium">UniCloud Virtual ID</p>
-                <code className="text-[11px] font-mono bg-white/10 text-purple-300 px-2 py-0.5 rounded border border-white/10">
+                <code className="text-[11px] font-mono bg-[#10141b] text-cyan-300 px-2 py-0.5 rounded border border-[#262c36]">
                   {selectedFile.id}
                 </code>
               </div>
@@ -396,14 +396,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
               <div>
                 <p className="text-slate-400 font-medium">Physical Google Drive Account</p>
                 <div className="flex items-center gap-1.5 mt-0.5 font-medium text-white">
-                  <HardDrive className="h-3.5 w-3.5 text-purple-400" />
+                  <HardDrive className="h-3.5 w-3.5 text-cyan-400" />
                   <span>{accounts.find((a) => a.id === selectedFile.storageAccountId)?.email}</span>
                 </div>
               </div>
 
               <div>
                 <p className="text-slate-400 font-medium">Google Drive Provider File ID</p>
-                <code className="text-[11px] font-mono bg-white/10 text-purple-300 px-2 py-0.5 rounded border border-white/10 break-all">
+                <code className="text-[11px] font-mono bg-[#10141b] text-cyan-300 px-2 py-0.5 rounded border border-[#262c36] break-all">
                   {selectedFile.providerFileId}
                 </code>
               </div>
@@ -429,7 +429,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 href={selectedFile.webUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="w-full py-2.5 px-3 bg-gradient-to-r from-purple-500/20 to-blue-500/20 hover:from-purple-500/30 hover:to-blue-500/30 text-purple-300 hover:text-white border border-purple-500/30 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all shadow-xs"
+                className="w-full py-2.5 px-3 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 hover:text-white border border-cyan-800/60 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all shadow-xs"
               >
                 <span>Open in Google Drive</span>
                 <ExternalLink className="h-3.5 w-3.5" />
@@ -441,10 +441,10 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
       {/* Notice Dialog for Unimplemented Phase Operations */}
       {noticeModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-[#090910]/95 backdrop-blur-2xl rounded-3xl p-6 shadow-2xl border border-white/15 space-y-4 text-slate-100">
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-[#12161f] rounded-2xl p-6 shadow-2xl border border-[#262c36] space-y-4 text-slate-100">
             <div className="flex items-start gap-3.5">
-              <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+              <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
                 <ShieldAlert className="h-5 w-5" />
               </div>
               <div>
@@ -455,7 +455,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => setNoticeModal(null)}
-                className="px-4 py-2 bg-white/15 hover:bg-white/20 text-white rounded-xl text-xs font-semibold border border-white/20 transition-all"
+                className="px-4 py-2 bg-[#1a202c] hover:bg-[#222a38] text-white rounded-xl text-xs font-semibold border border-[#262c36] transition-all"
               >
                 Understood
               </button>

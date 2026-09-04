@@ -7,7 +7,9 @@
  */
 
 import { Response } from 'express';
-import { ErrorCode, ApiResponse } from '../../types/api';
+import { ErrorCode, ApiResponse } from '../../types/api.js';
+
+export { ErrorCode };
 
 export class AppError extends Error {
   public readonly errorCode: ErrorCode;

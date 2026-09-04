@@ -8,10 +8,19 @@
 export interface DbUser {
   id: string;
   email: string;
+  password_hash?: string | null;
   display_name: string | null;
   avatar_url: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DbUserSession {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  expires_at: string;
+  created_at: string;
 }
 
 export interface DbStorageAccount {
@@ -111,11 +120,22 @@ export interface DbSyncHistory {
   completed_at: string | null;
 }
 
+export interface DbOAuthState {
+  state_id: string;
+  user_id: string;
+  provider: string;
+  redirect_uri?: string | null;
+  expires_at: string;
+  created_at: string;
+}
+
 export const TableNames = {
   USERS: 'users',
+  USER_SESSIONS: 'user_sessions',
   STORAGE_ACCOUNTS: 'storage_accounts',
   VIRTUAL_FOLDERS: 'virtual_folders',
   VIRTUAL_FILES: 'virtual_files',
   UPLOAD_JOBS: 'upload_jobs',
   SYNC_HISTORY: 'sync_history',
+  OAUTH_STATES: 'oauth_states',
 } as const;

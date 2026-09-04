@@ -1,7 +1,7 @@
 # UNICLOUD — MASTER ARCHITECTURE & SPECIFICATION DOCUMENT
 
-> **Version:** 1.0.0-phase0  
-> **Status:** Phase 0 Complete — Project Foundation & Architecture Established  
+> **Version:** 1.2.0-phase1  
+> **Status:** Phase 1 Complete — Database, Authentication & Real Backend State Operational  
 > **Target Release:** Unified Virtual Cloud Storage  
 > **Author:** Lead Software Architect & Full-Stack Engineer  
 
@@ -293,3 +293,91 @@ As mandated by Phase 0 discipline:
 3. **Cross-Account Folder Operations:**
    - *Risk:* Google Drive cannot physically nest a folder from Account B inside Account A.
    - *Mitigation:* Purely virtual folder hierarchy maintained in `virtual_folders`. Folders exist as database records that group files regardless of physical host account.
+
+---
+
+## 15. PHASE 0.5 ARCHITECTURE AUDIT & IMPLEMENTATION GAP ANALYSIS
+
+A comprehensive audit was executed across the entire codebase.
+
+### 15.1 Component Classification Summary
+
+- **REAL (Fully Implemented & Operational):**
+  - Cryptographic token encryption engine with AES-256-GCM (`src/server/utils/encryption.ts`).
+  - Structured error hierarchy (`AppError`, error codes, HTTP status mapping in `src/server/utils/errors.ts`).
+  - Security-auditing logging subsystem with regex-based credential and secret redaction (`src/server/utils/logger.ts`).
+  - Single-server unified runtime binding Express API routing and Vite SPA middleware on port 3000 (`server.ts`).
+  - Standardized REST response envelopes and error serialization middleware (`src/server/api/routes.ts`).
+  - Active capacity calculation and quota balancing logic (`src/server/services/StorageService.ts`).
+  - Upload routing decision engine supporting `most_free_space`, `balanced`, and `manual` modes (`src/server/services/UploadService.ts`).
+  - Dynamic route check API endpoint `/api/upload/route-check` actively called by client (`src/components/UploadModal.tsx`).
+  - Complete, strongly typed domain model (`src/types/`).
+  - Complete PostgreSQL relational schema DDL with indexing and triggers (`src/db/schema.sql`).
+  - Relational TypeScript entity definitions matching PostgreSQL tables (`src/db/schema.ts`).
+  - Modern, responsive Nordic Graphite & Cyan UI shell (`src/App.tsx`, `src/components/`).
+
+- **SCAFFOLD (Architecturally Structured, Strongly Typed, Stubbed for Next Phases):**
+  - `StorageProvider` abstraction and `GoogleDriveProvider` implementation (`src/server/providers/GoogleDriveProvider.ts` throwing `NOT_IMPLEMENTED`).
+  - `ProviderRegistry` factory for dynamic multi-provider resolution (`src/server/providers/ProviderRegistry.ts`).
+  - Domain service classes: `AccountService`, `FileService`, `FolderService`, `SyncService`, `SearchService`.
+  - API route stubs (`/api/accounts*`, `/api/files*`, `/api/folders*`, `/api/sync*`, `/api/search*`).
+
+- **DEMO (In-Memory Client Preview Data):**
+  - Storage accounts, virtual files, and virtual folders rendered in client UI views (`src/data/mockData.ts`).
+  - Upload simulation sliders and account connection sequence modals (`src/components/UploadModal.tsx`, `src/components/AddAccountModal.tsx`).
+
+- **TODO (Planned in Spec, Awaiting Scheduled Phases):**
+  - PostgreSQL client connection driver (e.g. `pg` / `postgres` / Supabase client).
+  - User session authentication and identity boundaries (Phase 1).
+  - Google OAuth 2.0 multi-account consent exchange and token refresh worker (Phase 2).
+  - Google Drive API v3 live client and delta sync worker (Phase 3).
+  - Chunked resumable file upload direct streaming pipeline (Phase 4).
+
+### 15.2 Key Architectural Decisions
+
+1. **Retain Express + Vite Architecture:**
+   - The unified Express + Vite setup is structurally sound, conforms to platform single-port requirements (port 3000), cleanly separates client and backend APIs, and eliminates any need to rewrite or migrate to Next.js.
+2. **Stateless Backend Design for Serverless / Container Scalability:**
+   - Keep long-running state out of Node process memory. Store all virtual filesystem metadata, encrypted credentials, and upload job states in PostgreSQL.
+3. **Database Driver Selection for Phase 1:**
+   - Use standard connection pooling (`pg` / `postgres` or `@supabase/supabase-js`) with `DATABASE_URL`. The schema DDL in `src/db/schema.sql` is ready for immediate deployment.
+4. **Resumable Upload Direct Streaming Architecture:**
+   - Avoid buffering files in Express server memory to remain serverless-compatible and respect memory limits. UniCloud server acts as the control plane (initiating Google Drive resumable sessions and verifying quotas), while file streams flow directly or via backpressured streams.
+
+### 15.3 Phase 1 Target Scope
+
+- Wire real PostgreSQL database persistence via connection pool.
+- Implement user identity and session management (Phase 1 authentication).
+- Replace in-memory mock account/file reads in API routes with database queries.
+- Transition UI state from `src/data/mockData.ts` to authenticated API endpoints.
+
+---
+
+## 16. PHASE 1 IMPLEMENTATION SUMMARY & PRODUCTION READINESS
+
+Phase 1 has established the production-grade persistence and identity foundation for UniCloud:
+
+1. **PostgreSQL Connectivity & Pooling:**
+   - Real PostgreSQL client via `pg.Pool` (`src/db/client.ts`) with SSL handling, connection pooling, and automatic migration runner.
+   - Built-in development fallback engine to ensure smooth operation when `DATABASE_URL` is unconfigured.
+   - `checkDatabaseHealth()` verifies connectivity, latency, and operational mode.
+
+2. **User Identity & Server-Side Session Management:**
+   - `UserService` (`src/server/services/UserService.ts`) provides user registration and authentication with `bcryptjs` (12 salt rounds).
+   - High-entropy cryptographic sessions (32-byte tokens generated with `crypto.randomBytes`).
+   - Session tokens are stored as SHA-256 hashes in `user_sessions` table with sliding TTL expirations.
+   - Sessions are delivered to clients via secure HTTP-only cookies (`unicloud_session`) with `SameSite=Lax`, completely isolated from browser JavaScript.
+
+3. **Authentication & Authorization Middleware:**
+   - `requireAuth` and `optionalAuth` middlewares (`src/server/api/middleware/auth.ts`) extract session tokens, validate against PostgreSQL, and attach the authenticated `req.user`.
+
+4. **Tenant Isolation Across Services:**
+   - `AccountService`, `FileService`, and `StorageService` strictly enforce `userId` scoping across all parameterized queries.
+   - Accounts and files are strictly isolated per user tenant at the service and database boundary.
+
+5. **Frontend Authentication & State Integration:**
+   - `AuthModal` provides interactive registration, login, and quick demo sign-in for `socialdoodle7@gmail.com`.
+   - `Header` displays authenticated user profile and logout actions.
+   - Clear visual isolation between real user state and simulated preview fixtures (`Demo Drive 01, 02, 03`).
+
+

@@ -102,12 +102,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     : null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="w-full max-w-xl bg-[#090910]/95 backdrop-blur-2xl rounded-3xl p-6 shadow-2xl border border-white/15 space-y-5 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto text-slate-100">
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+      <div className="w-full max-w-xl bg-[#12161f] rounded-2xl p-6 shadow-2xl border border-[#262c36] space-y-5 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto text-slate-100">
         {/* Header */}
-        <div className="flex items-start justify-between border-b border-white/10 pb-3">
+        <div className="flex items-start justify-between border-b border-[#262c36] pb-3">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-gradient-to-tr from-purple-600 to-blue-600 text-white shadow-md shadow-purple-500/20 border border-white/10">
+            <div className="p-2.5 rounded-xl bg-cyan-500/15 text-cyan-400 shadow-sm border border-cyan-500/30">
               <UploadCloud className="h-5 w-5" />
             </div>
             <div>
@@ -117,14 +117,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+            className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-[#1a202c] transition-colors"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
         {/* Phase Notice */}
-        <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-2.5">
+        <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-2.5">
           <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
           <div>
             <span className="font-bold">Phase 0 Architectural Testbed:</span> Actual resumable streaming to Google Drive API v3
@@ -140,14 +140,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               type="text"
               value={fileName}
               onChange={(e) => setFileName(e.target.value)}
-              className="w-full px-3 py-2 bg-white/[0.04] border border-white/10 text-white rounded-xl focus:bg-white/[0.08] focus:border-purple-500 focus:outline-hidden"
+              className="w-full px-3 py-2 bg-[#0e1117] border border-[#262c36] text-white rounded-xl focus:border-cyan-500 focus:outline-hidden"
             />
           </div>
 
           <div>
             <div className="flex justify-between font-semibold text-slate-300 mb-1">
               <span>File Size Simulation</span>
-              <span className="text-purple-400 font-bold">{sizeMb} MB ({formatBytes(sizeBytes)})</span>
+              <span className="text-cyan-400 font-bold">{sizeMb} MB ({formatBytes(sizeBytes)})</span>
             </div>
             <input
               type="range"
@@ -159,7 +159,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                 setSizeMb(Number(e.target.value));
                 setRoutingResult(null);
               }}
-              className="w-full accent-purple-500 h-2 bg-white/10 rounded-lg cursor-pointer"
+              className="w-full accent-cyan-400 h-2 bg-[#0e1117] border border-[#262c36] rounded-lg cursor-pointer"
             />
             <div className="flex justify-between text-[10px] text-slate-400 mt-1">
               <span>10 MB</span>
@@ -186,8 +186,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                   }}
                   className={`py-2 px-3 rounded-xl border text-center font-medium transition-all ${
                     strategy === s.id
-                      ? 'border-purple-500 bg-purple-500/20 text-white font-bold shadow-xs'
-                      : 'border-white/10 bg-white/[0.03] text-slate-400 hover:border-white/20 hover:text-slate-200'
+                      ? 'border-cyan-500 bg-cyan-950/60 text-cyan-300 font-bold shadow-xs'
+                      : 'border-[#262c36] bg-[#161b24] text-slate-400 hover:border-slate-600 hover:text-slate-200'
                   }`}
                 >
                   {s.label}
@@ -202,7 +202,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               <select
                 value={preferredAccountId}
                 onChange={(e) => setPreferredAccountId(e.target.value)}
-                className="w-full px-3 py-2 bg-[#13131c] border border-white/10 text-white rounded-xl focus:border-purple-500 focus:outline-hidden"
+                className="w-full px-3 py-2 bg-[#0e1117] border border-[#262c36] text-white rounded-xl focus:border-cyan-500 focus:outline-hidden"
               >
                 <option value="">Select an account</option>
                 {poolSummary.accounts.map((acc) => (
@@ -219,40 +219,40 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         <button
           onClick={handleSimulateRouting}
           disabled={isSimulating}
-          className="w-full py-2.5 px-4 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white rounded-xl text-xs font-bold shadow-lg shadow-purple-500/25 border border-purple-400/30 transition-all flex items-center justify-center gap-2"
+          className="w-full py-2.5 px-4 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-xs font-bold shadow-md shadow-cyan-950/50 border border-cyan-400/50 transition-all flex items-center justify-center gap-2 active:scale-[0.99]"
         >
-          <Zap className="h-4 w-4" />
+          <Zap className="h-4 w-4 text-slate-950" />
           <span>{isSimulating ? 'Evaluating Capacity...' : 'Execute Routing Decision'}</span>
         </button>
 
         {/* Routing Decision Output */}
         {routingResult && selectedAccount && (
-          <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 space-y-3 text-xs animate-in fade-in slide-in-from-top-2">
+          <div className="p-4 rounded-xl bg-[#10141b] border border-[#262c36] space-y-3 text-xs animate-in fade-in slide-in-from-top-2">
             <div className="flex items-center justify-between">
               <span className="font-bold text-white flex items-center gap-1.5">
                 <CheckCircle2 className="h-4 w-4 text-emerald-400" />
                 Routing Decision Resolved
               </span>
-              <span className="font-mono text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full font-bold">
+              <span className="font-mono text-[10px] bg-cyan-950/60 text-cyan-300 border border-cyan-800/60 px-2 py-0.5 rounded-full font-bold">
                 {routingResult.strategyUsed}
               </span>
             </div>
 
             <p className="text-slate-300 text-[11px]">{routingResult.reason}</p>
 
-            <div className="p-3 bg-white/[0.04] rounded-xl border border-white/10 space-y-2">
+            <div className="p-3 bg-[#161b24] rounded-xl border border-[#262c36] space-y-2">
               <div className="flex items-center gap-2 font-semibold text-white">
-                <HardDrive className="h-4 w-4 text-purple-400" />
+                <HardDrive className="h-4 w-4 text-cyan-400" />
                 <span>Selected Destination: {selectedAccount.displayName || selectedAccount.email}</span>
               </div>
-              <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400 pt-1.5 border-t border-white/10">
+              <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400 pt-1.5 border-t border-[#262c36]">
                 <div>
                   <span className="text-slate-400 block">Available Headroom:</span>
                   <span className="font-bold text-white">{formatBytes(routingResult.availableCapacityBeforeBytes)}</span>
                 </div>
                 <div>
                   <span className="text-slate-400 block">Projected After Upload:</span>
-                  <span className="font-bold text-blue-300">{formatBytes(routingResult.projectedCapacityAfterBytes)}</span>
+                  <span className="font-bold text-teal-300">{formatBytes(routingResult.projectedCapacityAfterBytes)}</span>
                 </div>
               </div>
             </div>

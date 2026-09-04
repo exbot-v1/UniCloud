@@ -62,20 +62,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside
       id="unicloud-sidebar"
       className={cn(
-        'w-64 flex flex-col justify-between border-r border-white/10 bg-white/[0.03] backdrop-blur-xl p-4 select-none shrink-0 transition-all text-slate-200',
+        'w-64 flex flex-col justify-between border-r border-[#262c36] bg-[#12161f] p-4 select-none shrink-0 transition-all text-slate-200',
         className
       )}
     >
       {/* Brand & Logo */}
       <div>
         <div className="flex items-center gap-3 px-2 py-3 mb-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 text-white shadow-lg shadow-purple-500/20">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500 to-teal-500 text-slate-950 font-black shadow-md shadow-cyan-950/40">
             <Cloud className="h-5 w-5" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
               <span className="font-bold tracking-tight text-white text-lg">UniCloud</span>
-              <span className="rounded-full bg-purple-500/20 border border-purple-500/30 px-2 py-0.5 text-[10px] font-semibold text-purple-300 uppercase tracking-wider">
+              <span className="rounded-full bg-cyan-950/60 border border-cyan-800/60 px-2 py-0.5 text-[10px] font-semibold text-cyan-300 uppercase tracking-wider">
                 Virtual
               </span>
             </div>
@@ -84,7 +84,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Navigation Items */}
-        <nav className="space-y-1.5">
+        <nav className="space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -96,25 +96,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 className={cn(
                   'w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all text-left',
                   isActive
-                    ? 'bg-white/10 text-white border border-white/15 shadow-sm backdrop-blur-sm'
-                    : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                    ? 'bg-[#1a202c] text-cyan-200 border border-cyan-500/30 shadow-xs'
+                    : 'text-slate-400 hover:bg-[#161b24] hover:text-slate-200 border border-transparent'
                 )}
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <span
                     className={cn(
                       'w-1.5 h-1.5 rounded-full transition-all',
-                      isActive ? 'bg-purple-400 shadow-[0_0_8px_rgba(192,132,252,0.8)]' : 'bg-transparent'
+                      isActive ? 'bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]' : 'bg-transparent'
                     )}
                   />
-                  <Icon className={cn('h-4 w-4 shrink-0', isActive ? 'text-purple-300' : 'text-slate-500')} />
+                  <Icon className={cn('h-4 w-4 shrink-0', isActive ? 'text-cyan-400' : 'text-slate-400')} />
                   <span className="truncate">{item.label}</span>
                 </div>
                 {item.badge !== undefined && (
                   <span
                     className={cn(
                       'text-xs font-semibold px-2 py-0.5 rounded-full',
-                      isActive ? 'bg-white/20 text-white' : 'bg-white/5 text-slate-400 border border-white/10'
+                      isActive ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-500/30' : 'bg-[#161b24] text-slate-400 border border-[#262c36]'
                     )}
                   >
                     {item.badge}
@@ -124,7 +124,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <span
                     className={cn(
                       'text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded',
-                      isActive ? 'bg-purple-500/30 text-purple-200' : 'bg-purple-500/15 text-purple-300 border border-purple-500/20'
+                      isActive ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-500/40' : 'bg-cyan-950/40 text-cyan-400 border border-cyan-800/40'
                     )}
                   >
                     {item.tag}
@@ -137,20 +137,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Storage Pool Widget & Account Action */}
-      <div className="mt-6 pt-4 border-t border-white/10 space-y-3">
-        <div className="rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur-md p-3.5 shadow-sm">
+      <div className="mt-6 pt-4 border-t border-[#262c36] space-y-3">
+        <div className="rounded-2xl border border-[#262c36] bg-[#161b24] p-3.5 shadow-sm">
           <div className="flex items-center justify-between text-xs mb-2">
             <span className="font-semibold text-slate-300 flex items-center gap-1.5">
-              <Layers className="h-3.5 w-3.5 text-purple-400" />
+              <Layers className="h-3.5 w-3.5 text-cyan-400" />
               Storage Pool
             </span>
-            <span className="font-medium text-purple-300">{poolSummary.usagePercentage}%</span>
+            <span className="font-medium text-cyan-300">{poolSummary.usagePercentage}%</span>
           </div>
 
           {/* Progress Bar */}
-          <div className="h-2 w-full overflow-hidden rounded-full bg-white/10 mb-2">
+          <div className="h-2 w-full overflow-hidden rounded-full bg-[#0e1117] border border-[#262c36] mb-2">
             <div
-              className="h-full bg-gradient-to-r from-purple-500 to-blue-500 rounded-full transition-all duration-500"
+              className="h-full bg-gradient-to-r from-cyan-500 to-teal-400 rounded-full transition-all duration-500"
               style={{ width: `${Math.min(100, poolSummary.usagePercentage)}%` }}
             />
           </div>
@@ -160,19 +160,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span>{formatBytes(poolSummary.totalCapacityBytes)} pool</span>
           </div>
           
-          <div className="mt-2 pt-2 border-t border-white/10 text-[10px] text-slate-400 flex items-center justify-between">
+          <div className="mt-2 pt-2 border-t border-[#262c36] text-[10px] text-slate-400 flex items-center justify-between">
             <span>{poolSummary.accounts.length} Drives connected</span>
-            <span className="text-emerald-400 font-medium">{formatBytes(poolSummary.totalFreeBytes)} free</span>
+            <span className="text-teal-400 font-medium">{formatBytes(poolSummary.totalFreeBytes)} free</span>
           </div>
         </div>
 
         <button
           id="btn-add-account-sidebar"
           onClick={onOpenAddAccount}
-          className="w-full flex items-center justify-between text-xs font-semibold text-purple-300 hover:text-white bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 rounded-xl px-3 py-2 transition-all shadow-xs"
+          className="w-full flex items-center justify-between text-xs font-semibold text-cyan-300 hover:text-white bg-[#1a202c] hover:bg-[#222a38] border border-cyan-500/30 rounded-xl px-3 py-2 transition-all shadow-xs"
         >
           <span>+ Connect Google Drive</span>
-          <ChevronRight className="h-3.5 w-3.5 text-purple-400" />
+          <ChevronRight className="h-3.5 w-3.5 text-cyan-400" />
         </button>
       </div>
     </aside>
