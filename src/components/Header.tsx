@@ -62,12 +62,12 @@ export const Header: React.FC<HeaderProps> = ({
             value={searchQuery}
             disabled
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search — Coming in Phase 3"
-            title="Unified cross-account search is planned for Phase 3."
+            placeholder="Search — Coming in Phase 5"
+            title="Unified cross-account search is planned for Phase 5."
             className="w-full pl-10 pr-12 py-2 text-sm bg-[#0e1117]/60 text-slate-400 placeholder:text-slate-500 rounded-xl border border-[#262c36] cursor-not-allowed transition-all"
           />
           <kbd className="absolute right-3 top-1/2 -translate-y-1/2 hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono text-slate-500 bg-[#1a202c]/60 border border-[#262c36] rounded">
-            Phase 3
+            Phase 5
           </kbd>
         </div>
       </div>

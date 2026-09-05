@@ -39,6 +39,7 @@ interface FilesViewProps {
   searchQuery: string;
   onOpenUpload: () => void;
   tabTitle?: string;
+  isDemoData?: boolean;
 }
 
 export const FilesView: React.FC<FilesViewProps> = ({
@@ -48,6 +49,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
   searchQuery,
   onOpenUpload,
   tabTitle = 'My Files',
+  isDemoData = true,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -112,16 +114,23 @@ export const FilesView: React.FC<FilesViewProps> = ({
       {/* Top Action Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#262c36] pb-4">
         {/* Breadcrumb Navigation */}
-        <div className="flex items-center gap-2 text-sm text-slate-300 overflow-x-auto">
-          <button
-            onClick={() => setCurrentFolderId(null)}
-            className={cn(
-              'font-semibold hover:text-white transition-colors',
-              currentFolderId === null ? 'text-white' : 'text-slate-400'
+        <div className="flex items-center gap-2.5 text-sm text-slate-300 overflow-x-auto">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCurrentFolderId(null)}
+              className={cn(
+                'font-semibold hover:text-white transition-colors',
+                currentFolderId === null ? 'text-white' : 'text-slate-400'
+              )}
+            >
+              {tabTitle}
+            </button>
+            {isDemoData && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-950/60 text-cyan-300 border border-cyan-800/60 uppercase tracking-wider">
+                Demo Preview
+              </span>
             )}
-          >
-            {tabTitle}
-          </button>
+          </div>
           {currentFolder && (
             <>
               <span className="text-slate-500">/</span>
@@ -232,9 +241,16 @@ export const FilesView: React.FC<FilesViewProps> = ({
           {/* Files Section */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                Files ({filteredFiles.length})
-              </h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  Files ({filteredFiles.length})
+                </h3>
+                {isDemoData && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#10141b] text-slate-400 border border-[#262c36] uppercase">
+                    Demo
+                  </span>
+                )}
+              </div>
               <span className="text-[11px] text-slate-400">
                 Click any file to inspect virtual-to-physical mapping
               </span>

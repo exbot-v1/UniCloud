@@ -30,7 +30,7 @@ export const SpecView: React.FC = () => {
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-bold text-white">UNICLOUD — Master Architecture Spec</h1>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-cyan-950/60 text-cyan-300 border border-cyan-800/60 uppercase tracking-wider">
-              Phase 2.1.1 Active
+              Phase 2.1.1 Complete
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -111,11 +111,10 @@ Google Drive #01     Google Drive #02     Google Drive #03
             <div className="rounded-xl border border-[#262c36] bg-[#161b24] p-6 shadow-sm space-y-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <GitBranch className="h-4 w-4 text-cyan-400" />
-                Dynamic Upload Routing
+                Dynamic Upload Routing — Planned
               </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Incoming uploads are evaluated by the Upload Router and directed to the account with the highest available
-                free space or best capacity balance, complete with resumable chunking for files &gt;5MB.
+                Upload routing will distribute files across connected Google Drive accounts according to available capacity. Resumable uploads and automated routing are planned for Phase 4.
               </p>
             </div>
           </div>
@@ -222,7 +221,7 @@ Google Drive #01     Google Drive #02     Google Drive #03
               {[
                 { phase: 'Phase 0', title: 'Master Architecture & Foundation', done: true, notes: 'Schema DDL, StorageProvider abstraction, AES encryption, UI shell, Express/Vite server.' },
                 { phase: 'Phase 1', title: 'Database Setup & User Authentication', done: true, notes: 'PostgreSQL connectivity, user sessions, bcrypt hashing, tenant isolation.' },
-                { phase: 'Phase 2.1.1 (Active)', title: 'Google Drive Sync Integrity Hardened', done: true, notes: 'Multi-account server-side OAuth flow, token encryption at rest, live quota retrieval, metadata sync integrity & guarded reconciliation.' },
+                { phase: 'Phase 2.1.1 (Complete)', title: 'Google Drive Sync Integrity Hardened', done: true, notes: 'Multi-account server-side OAuth flow, token encryption at rest, live quota retrieval, metadata sync integrity & guarded reconciliation.' },
                 { phase: 'Phase 3', title: 'Virtual Filesystem Delta Synchronization', done: false, notes: 'Sync Google Drive changes to virtual_files and virtual_folders; implement file rename/trash.' },
                 { phase: 'Phase 4', title: 'Resumable Upload Engine & Routing', done: false, notes: 'Direct chunked uploads to Google Drive with automated quota balancer.' },
                 { phase: 'Phase 5', title: 'Unified Search & Quota Optimization', done: false, notes: 'Cross-account search, trash recovery, and intelligent file relocation.' },

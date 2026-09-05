@@ -244,6 +244,7 @@ export default function App() {
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
               tabTitle="My Files"
+              isDemoData={true}
             />
           )}
 
@@ -255,6 +256,7 @@ export default function App() {
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
               tabTitle="Recent Files"
+              isDemoData={isUsingDemoData}
             />
           )}
 
@@ -266,6 +268,7 @@ export default function App() {
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
               tabTitle="Starred Items"
+              isDemoData={true}
             />
           )}
 
@@ -277,6 +280,7 @@ export default function App() {
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
               tabTitle="Virtual Trash"
+              isDemoData={true}
             />
           )}
 
