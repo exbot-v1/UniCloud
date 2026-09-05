@@ -38,6 +38,7 @@ interface SidebarProps {
   poolSummary: StoragePoolSummary;
   className?: string;
   onOpenAddAccount: () => void;
+  isDemoData?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -46,6 +47,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   poolSummary,
   className,
   onOpenAddAccount,
+  isDemoData = false,
 }) => {
   const navItems = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
@@ -54,7 +56,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'starred' as const, label: 'Starred', icon: Star },
     { id: 'trash' as const, label: 'Trash', icon: Trash2 },
     { id: 'accounts' as const, label: 'Storage Accounts', icon: HardDrive, badge: poolSummary.accounts.length },
-    { id: 'spec' as const, label: 'Architecture & Spec', icon: BookOpen, tag: 'Phase 0' },
+    { id: 'spec' as const, label: 'Architecture & Spec', icon: BookOpen, tag: 'Phase 2.1.1' },
     { id: 'settings' as const, label: 'Settings', icon: Settings },
   ];
 
@@ -161,7 +163,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           
           <div className="mt-2 pt-2 border-t border-[#262c36] text-[10px] text-slate-400 flex items-center justify-between">
-            <span>{poolSummary.accounts.length} Drives connected</span>
+            <span>{poolSummary.accounts.length} {isDemoData ? 'Demo Accounts' : 'Connected Accounts'}</span>
             <span className="text-teal-400 font-medium">{formatBytes(poolSummary.totalFreeBytes)} free</span>
           </div>
         </div>

@@ -182,11 +182,12 @@ export const FilesView: React.FC<FilesViewProps> = ({
           </button>
 
           <button
-            onClick={onOpenUpload}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl shadow-md shadow-cyan-950/50 border border-cyan-400/40 transition-all"
+            disabled
+            title="File uploads are planned for Phase 4."
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-[#1a202c] text-slate-400 border border-[#262c36] rounded-xl cursor-not-allowed opacity-80"
           >
-            <Upload className="h-3.5 w-3.5 text-slate-950" />
-            <span>Upload</span>
+            <Upload className="h-3.5 w-3.5 text-slate-400" />
+            <span>Uploads — Phase 4</span>
           </button>
         </div>
       </div>
@@ -243,7 +244,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
               <div className="p-12 text-center rounded-2xl border border-dashed border-[#262c36] bg-[#161b24]">
                 <FileText className="h-8 w-8 text-slate-500 mx-auto mb-2" />
                 <p className="text-sm font-semibold text-slate-300">No files found</p>
-                <p className="text-xs text-slate-500 mt-1">Try changing your search or filter criteria.</p>
+                <p className="text-xs text-slate-400 mt-1">Your synchronized Drive metadata will appear here, or adjust your search criteria.</p>
               </div>
             ) : viewMode === 'list' ? (
               /* LIST VIEW */
@@ -448,7 +449,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 <ShieldAlert className="h-5 w-5" />
               </div>
               <div>
-                <h3 className="text-sm font-bold text-white">Phase 0 Architectural Boundary</h3>
+                <h3 className="text-sm font-bold text-white">Planned Roadmap Feature</h3>
                 <p className="text-xs text-slate-300 mt-1 leading-relaxed">{noticeModal}</p>
               </div>
             </div>

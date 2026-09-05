@@ -181,6 +181,7 @@ export default function App() {
         poolSummary={poolSummary}
         onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
         className="hidden md:flex z-10"
+        isDemoData={isUsingDemoData}
       />
 
       {/* Navigation Drawer (Mobile) */}
@@ -202,6 +203,7 @@ export default function App() {
               setIsMobileSidebarOpen(false);
             }}
             className="relative z-10 w-72 bg-[#12161f] border-r border-[#262c36]"
+            isDemoData={isUsingDemoData}
           />
         </div>
       )}
@@ -230,6 +232,7 @@ export default function App() {
               onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               onNavigateFiles={() => setActiveTab('files')}
               onNavigateAccounts={() => setActiveTab('accounts')}
+              isDemoData={isUsingDemoData}
             />
           )}
 

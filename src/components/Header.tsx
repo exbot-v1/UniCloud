@@ -55,17 +55,19 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         <div className="relative w-full">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-cyan-400/70" />
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
           <input
             id="global-search-input"
             type="text"
             value={searchQuery}
+            disabled
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search across all connected Google Drives..."
-            className="w-full pl-10 pr-12 py-2 text-sm bg-[#0e1117] hover:bg-[#161b24] focus:bg-[#161b24] text-slate-100 placeholder:text-slate-400 rounded-xl border border-[#262c36] focus:border-cyan-500/70 focus:outline-hidden transition-all"
+            placeholder="Search — Coming in Phase 3"
+            title="Unified cross-account search is planned for Phase 3."
+            className="w-full pl-10 pr-12 py-2 text-sm bg-[#0e1117]/60 text-slate-400 placeholder:text-slate-500 rounded-xl border border-[#262c36] cursor-not-allowed transition-all"
           />
-          <kbd className="absolute right-3 top-1/2 -translate-y-1/2 hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono text-slate-400 bg-[#1a202c] border border-[#262c36] rounded">
-            ⌘K
+          <kbd className="absolute right-3 top-1/2 -translate-y-1/2 hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono text-slate-500 bg-[#1a202c]/60 border border-[#262c36] rounded">
+            Phase 3
           </kbd>
         </div>
       </div>
@@ -75,17 +77,19 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Architecture Status Badge */}
         <div className="hidden lg:flex items-center gap-1.5 px-3 py-1 bg-cyan-950/50 border border-cyan-800/60 rounded-full text-xs text-cyan-300 font-medium">
           <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" />
-          <span>Phase 1: DB &amp; Auth Active</span>
+          <span>Phase 2.1.1 — Google Drive Connected</span>
         </div>
 
-        {/* Upload Action Button */}
+        {/* Upload Action Button - Planned Phase 4 */}
         <button
           id="btn-quick-upload"
-          onClick={onOpenUpload}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-sm font-bold shadow-md shadow-cyan-950/50 border border-cyan-400/50 transition-all active:scale-[0.98]"
+          disabled
+          title="File uploads are planned for Phase 4."
+          className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#1a202c] text-slate-400 rounded-xl text-xs sm:text-sm font-semibold border border-[#262c36] cursor-not-allowed opacity-80"
         >
-          <UploadCloud className="h-4 w-4 text-slate-950" />
-          <span className="hidden sm:inline">Upload File</span>
+          <UploadCloud className="h-4 w-4 text-slate-400" />
+          <span className="hidden sm:inline">Uploads — Phase 4</span>
+          <span className="sm:hidden">Phase 4</span>
         </button>
 
         {/* User Profile / Auth State */}

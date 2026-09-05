@@ -121,9 +121,13 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       {/* Top Banner & Action */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#262c36] pb-4">
         <div>
-          <h1 className="text-xl font-bold text-white">Connected Storage Accounts</h1>
+          <h1 className="text-xl font-bold text-white">
+            {isDemoData ? 'Google Drive Accounts' : 'Connected Storage Accounts'}
+          </h1>
           <p className="text-xs text-slate-400 mt-0.5">
-            Manage disparate Google Drive accounts comprising your unified virtual storage pool.
+            {isDemoData
+              ? 'Previewing simulated Google Drive accounts. Connect your real Google account to begin live sync.'
+              : 'Manage disparate Google Drive accounts comprising your unified virtual storage pool.'}
           </p>
         </div>
         <button
@@ -139,7 +143,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       {/* Aggregate Storage Pool Summary Bar */}
       <div className="rounded-xl border border-[#262c36] bg-[#161b24] p-5 shadow-sm grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div>
-          <p className="text-xs font-medium text-slate-400">Connected Accounts</p>
+          <p className="text-xs font-medium text-slate-400">
+            {isDemoData ? 'Demo Accounts' : 'Connected Accounts'}
+          </p>
           <p className="text-xl font-black text-white mt-1">{poolSummary.totalAccounts}</p>
           <p className="text-[11px] text-slate-400">All Google Drive v3</p>
         </div>
@@ -248,20 +254,26 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                         <p className="text-xs text-slate-400 truncate">{account.email}</p>
                       </div>
                     </div>
-                    <span
-                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border shrink-0 ${
-                        account.status === AccountStatus.ACTIVE
-                          ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/50'
-                          : account.status === AccountStatus.TOKEN_EXPIRED
-                          ? 'bg-amber-950/60 text-amber-300 border-amber-800/50'
-                          : 'bg-rose-950/60 text-rose-300 border-rose-800/50'
-                      }`}
-                    >
-                      {account.status === AccountStatus.ACTIVE && <CheckCircle2 className="h-3 w-3" />}
-                      {account.status === AccountStatus.TOKEN_EXPIRED && <Clock className="h-3 w-3" />}
-                      {account.status === AccountStatus.ERROR && <AlertTriangle className="h-3 w-3" />}
-                      {account.status}
-                    </span>
+                    {isDemoData ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border shrink-0 bg-slate-800 text-slate-300 border-slate-700">
+                        DEMO
+                      </span>
+                    ) : (
+                      <span
+                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border shrink-0 ${
+                          account.status === AccountStatus.ACTIVE
+                            ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/50'
+                            : account.status === AccountStatus.TOKEN_EXPIRED
+                            ? 'bg-amber-950/60 text-amber-300 border-amber-800/50'
+                            : 'bg-rose-950/60 text-rose-300 border-rose-800/50'
+                        }`}
+                      >
+                        {account.status === AccountStatus.ACTIVE && <CheckCircle2 className="h-3 w-3" />}
+                        {account.status === AccountStatus.TOKEN_EXPIRED && <Clock className="h-3 w-3" />}
+                        {account.status === AccountStatus.ERROR && <AlertTriangle className="h-3 w-3" />}
+                        {account.status}
+                      </span>
+                    )}
                   </div>
 
                   {/* Quota Progress */}

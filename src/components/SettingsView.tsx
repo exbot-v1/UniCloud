@@ -51,9 +51,14 @@ export const SettingsView: React.FC = () => {
           <div className="p-2.5 rounded-xl bg-cyan-500/15 text-cyan-400 border border-cyan-500/30">
             <Sliders className="h-5 w-5" />
           </div>
-          <div>
-            <h2 className="text-sm font-bold text-white">Autonomous Upload Routing Policy</h2>
-            <p className="text-xs text-slate-400">Determines which Google Drive account receives newly uploaded files</p>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-bold text-white">Autonomous Upload Routing Policy</h2>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#10141b] text-slate-400 border border-[#262c36] uppercase">
+                Planned — Phase 4
+              </span>
+            </div>
+            <p className="text-xs text-slate-400">Configure future upload distribution policies across connected accounts</p>
           </div>
         </div>
 
@@ -152,7 +157,7 @@ export const SettingsView: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 text-xs">
           <div className="p-3.5 rounded-xl bg-[#10141b] border border-[#262c36] space-y-1">
             <p className="text-slate-400 font-medium">Database Target</p>
-            <p className="font-bold text-white">PostgreSQL / Supabase (Phase 1 Ready)</p>
+            <p className="font-bold text-white">PostgreSQL (Phase 2.1.1 Active &amp; Connected)</p>
             <p className="text-[11px] text-slate-400">Schema defined in `src/db/schema.sql`</p>
           </div>
 

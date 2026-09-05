@@ -111,8 +111,13 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               <UploadCloud className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-white">Upload & Capacity Routing Engine</h3>
-              <p className="text-xs text-slate-400">Simulate file routing across your connected Google Drive accounts</p>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-white">Upload & Capacity Routing Preview</h3>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#161b24] text-slate-400 border border-[#262c36] uppercase">
+                  Phase 4 Preview
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">Preview simulated file distribution across Google Drive accounts</p>
             </div>
           </div>
           <button
@@ -124,11 +129,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         </div>
 
         {/* Phase Notice */}
-        <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-2.5">
-          <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+        <div className="p-3 rounded-xl bg-cyan-950/40 border border-cyan-800/50 text-cyan-200 text-xs flex items-start gap-2.5">
+          <AlertCircle className="h-4 w-4 text-cyan-400 shrink-0 mt-0.5" />
           <div>
-            <span className="font-bold">Phase 0 Architectural Testbed:</span> Actual resumable streaming to Google Drive API v3
-            will be wired up in Phase 4. This tool evaluates the routing engine against your storage pool capacity.
+            <span className="font-bold">Planned for Phase 4:</span> Direct resumable streaming to Google Drive API v3 and
+            autonomous upload routing will be implemented in Phase 4. This tool evaluates routing logic against current capacity.
           </div>
         </div>
 
@@ -222,7 +227,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           className="w-full py-2.5 px-4 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-xs font-bold shadow-md shadow-cyan-950/50 border border-cyan-400/50 transition-all flex items-center justify-center gap-2 active:scale-[0.99]"
         >
           <Zap className="h-4 w-4 text-slate-950" />
-          <span>{isSimulating ? 'Evaluating Capacity...' : 'Execute Routing Decision'}</span>
+          <span>{isSimulating ? 'Evaluating Capacity...' : 'Simulate Routing Decision'}</span>
         </button>
 
         {/* Routing Decision Output */}

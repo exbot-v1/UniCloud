@@ -149,7 +149,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {mode === 'login' ? 'Sign In to UniCloud' : 'Create UniCloud Account'}
             </h2>
             <p className="text-xs text-slate-400">
-              Phase 1: Persistent backend identity & tenant isolation
+              Secure backend identity &amp; tenant isolation
             </p>
           </div>
         </div>
