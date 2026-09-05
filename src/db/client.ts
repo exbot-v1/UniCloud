@@ -194,6 +194,9 @@ export async function ensureSchema(): Promise<void> {
       );
 
       CREATE INDEX IF NOT EXISTS idx_sync_history_account ON sync_history(storage_account_id, started_at DESC);
+
+      -- Migration: Ensure drive_change_token exists for Delta Sync (Phase 3)
+      ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS drive_change_token TEXT;
     `);
 
     schemaInitialized = true;
@@ -517,11 +520,29 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   if (/UPDATE storage_accounts/i.test(normalizedSql)) {
-    // Handle status / quota / sync update
+    // Handle status / quota / sync / change token update
     const id = params[params.length - 2] || params[params.length - 1];
     const acc = memoryDb.storageAccounts.get(id);
     if (acc) {
       acc.updated_at = new Date().toISOString();
+      if (/drive_change_token/i.test(normalizedSql)) {
+        acc.drive_change_token = params[0];
+        if (typeof acc.provider_metadata === 'object' && acc.provider_metadata !== null) {
+          acc.provider_metadata = { ...acc.provider_metadata, driveChangeToken: params[0] };
+        } else {
+          acc.provider_metadata = { driveChangeToken: params[0] };
+        }
+      }
+      if (/total_bytes/i.test(normalizedSql)) {
+        acc.total_bytes = params[0];
+        acc.used_bytes = params[1];
+        acc.free_bytes = params[2];
+        acc.last_synced_at = params[3];
+      }
+      if (/status\s*=/i.test(normalizedSql)) {
+        acc.status = params[0];
+        acc.error_message = params[1];
+      }
       return { rows: [acc as any], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
@@ -557,6 +578,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     const status = params[15] || 'active';
     const is_enabled = params[16] ?? true;
     const error_message = params[17] || null;
+    const drive_change_token = params[18] || null;
     const now = new Date().toISOString();
 
     // Check if account already exists for user + provider + provider_account_id
@@ -575,6 +597,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
         acc.free_bytes = free_bytes;
         acc.status = status;
         acc.error_message = error_message;
+        if (drive_change_token !== null) acc.drive_change_token = drive_change_token;
         acc.updated_at = now;
         return { rows: [acc as any], rowCount: 1 };
       }
@@ -599,6 +622,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       status,
       is_enabled,
       error_message,
+      drive_change_token: drive_change_token || null,
       last_synced_at: null,
       last_health_check_at: now,
       provider_metadata: {},
@@ -648,6 +672,20 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   // 5. Virtual Files Queries
+  if (/DELETE FROM virtual_files WHERE storage_account_id = .* AND provider_file_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const providerFileId = params[1];
+    const userId = params[2];
+    let deletedCount = 0;
+    for (const [id, f] of memoryDb.virtualFiles.entries()) {
+      if (f.storage_account_id === accountId && f.provider_file_id === providerFileId && (!userId || f.user_id === userId)) {
+        memoryDb.virtualFiles.delete(id);
+        deletedCount++;
+      }
+    }
+    return { rows: [], rowCount: deletedCount };
+  }
+
   if (/DELETE FROM virtual_files WHERE storage_account_id =/i.test(normalizedSql)) {
     const accountId = params[0];
     for (const [id, f] of memoryDb.virtualFiles.entries()) {
@@ -656,6 +694,20 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       }
     }
     return { rows: [], rowCount: 1 };
+  }
+
+  if (/DELETE FROM virtual_folders WHERE storage_account_id = .* AND provider_folder_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const providerFolderId = params[1];
+    const userId = params[2];
+    let deletedCount = 0;
+    for (const [id, f] of memoryDb.virtualFolders.entries()) {
+      if (f.storage_account_id === accountId && f.provider_folder_id === providerFolderId && (!userId || f.user_id === userId)) {
+        memoryDb.virtualFolders.delete(id);
+        deletedCount++;
+      }
+    }
+    return { rows: [], rowCount: deletedCount };
   }
 
   if (/DELETE FROM virtual_folders WHERE storage_account_id =/i.test(normalizedSql)) {
@@ -668,10 +720,31 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     return { rows: [], rowCount: 1 };
   }
 
+  if (/SELECT count\(\*\) .* FROM virtual_files WHERE storage_account_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const userId = params[1];
+    let count = 0;
+    for (const f of memoryDb.virtualFiles.values()) {
+      if (f.storage_account_id === accountId && (!userId || f.user_id === userId)) {
+        count++;
+      }
+    }
+    return { rows: [{ cnt: count, count }] as any[], rowCount: 1 };
+  }
+
   if (/SELECT .* FROM virtual_files WHERE id =/i.test(normalizedSql)) {
     const fileId = params[0];
     const file = memoryDb.virtualFiles.get(fileId);
     return { rows: file ? [file as any] : [], rowCount: file ? 1 : 0 };
+  }
+
+  if (/SELECT .* FROM virtual_files WHERE storage_account_id = .* AND provider_file_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const providerFileId = params[1];
+    const files = Array.from(memoryDb.virtualFiles.values()).filter(
+      (f: any) => f.storage_account_id === accountId && f.provider_file_id === providerFileId
+    );
+    return { rows: files as any[], rowCount: files.length };
   }
 
   if (/SELECT .* FROM virtual_files WHERE storage_account_id = .* AND user_id =/i.test(normalizedSql)) {
@@ -695,6 +768,22 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   if (/UPDATE virtual_files SET is_trashed = TRUE/i.test(normalizedSql)) {
+    if (/provider_file_id/i.test(normalizedSql)) {
+      const accountId = params[0];
+      const providerFileId = params[1];
+      const userId = params[2];
+      let updated = 0;
+      for (const f of memoryDb.virtualFiles.values()) {
+        if (f.storage_account_id === accountId && f.provider_file_id === providerFileId && (!userId || f.user_id === userId)) {
+          f.is_trashed = true;
+          f.trashed_at = new Date().toISOString();
+          f.updated_at = new Date().toISOString();
+          updated++;
+        }
+      }
+      return { rows: [], rowCount: updated };
+    }
+
     const accountId = params[0];
     const userId = params[1];
     const syncTimeStr = params[2];
@@ -818,6 +907,22 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     return { rows: folders as any[], rowCount: folders.length };
   }
 
+  if (/UPDATE virtual_folders SET is_trashed = TRUE/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const providerFolderId = params[1];
+    const userId = params[2];
+    let updated = 0;
+    for (const f of memoryDb.virtualFolders.values()) {
+      if (f.storage_account_id === accountId && f.provider_folder_id === providerFolderId && (!userId || f.user_id === userId)) {
+        f.is_trashed = true;
+        f.trashed_at = new Date().toISOString();
+        f.updated_at = new Date().toISOString();
+        updated++;
+      }
+    }
+    return { rows: [], rowCount: updated };
+  }
+
   if (/UPDATE virtual_folders SET parent_id =/i.test(normalizedSql)) {
     const parent_id = params[0];
     const id = params[1];
@@ -930,10 +1035,14 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   if (/SELECT .* FROM sync_history/i.test(normalizedSql)) {
-    const list = Array.from(memoryDb.syncHistory.values());
-    if (params && params[0]) {
-      const filtered = list.filter(h => h.storage_account_id === params[0] || h.user_id === params[0]);
-      return { rows: filtered as any[], rowCount: filtered.length };
+    let list = Array.from(memoryDb.syncHistory.values());
+    if (params && params.length >= 2) {
+      list = list.filter(h => h.storage_account_id === params[0] && h.user_id === params[1]);
+    } else if (params && params.length === 1) {
+      list = list.filter(h => h.storage_account_id === params[0] || h.user_id === params[0]);
+    }
+    if (/ORDER BY .* DESC/i.test(normalizedSql)) {
+      list.sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''));
     }
     return { rows: list as any[], rowCount: list.length };
   }

@@ -44,6 +44,7 @@ export interface DbStorageAccount {
   error_message: string | null;
   last_synced_at: string | null;
   last_health_check_at: string | null;
+  drive_change_token?: string | null;
   provider_metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;

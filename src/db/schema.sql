@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS storage_accounts (
     last_health_check_at TIMESTAMPTZ,
 
     -- Provider specific metadata (JSONB for flexibility)
+    drive_change_token TEXT, -- Persisted Google Drive change token for delta sync (Phase 3)
     provider_metadata JSONB DEFAULT '{}'::jsonb,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

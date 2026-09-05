@@ -42,6 +42,29 @@ export interface ProviderFileListResult {
   paginationComplete: boolean;
 }
 
+export interface ProviderChangeItem {
+  fileId: string;
+  removed: boolean;
+  time?: string;
+  file?: ProviderFileMetadata | null;
+}
+
+export interface ProviderChangeListOptions {
+  pageToken: string;
+  pageSize?: number;
+  includeTrashed?: boolean;
+  includeRemoved?: boolean;
+  restrictToMyDrive?: boolean;
+  maxPages?: number;
+}
+
+export interface ProviderChangeListResult {
+  changes: ProviderChangeItem[];
+  newStartPageToken?: string;
+  nextPageToken?: string;
+  paginationComplete: boolean;
+}
+
 export interface ResumableUploadSession {
   sessionId: string;
   uploadUri: string;
@@ -88,6 +111,16 @@ export interface StorageProvider {
    * Lists files and folders from the provider
    */
   listFiles(accessToken: string, options?: ProviderFileListOptions): Promise<ProviderFileListResult>;
+
+  /**
+   * Retrieves the current start page token for incremental changes tracking (Phase 3)
+   */
+  getStartPageToken(accessToken: string): Promise<string>;
+
+  /**
+   * Queries incremental changes from the provider using a change/page token (Phase 3)
+   */
+  listChanges(accessToken: string, options: ProviderChangeListOptions): Promise<ProviderChangeListResult>;
 
   /**
    * Retrieves single file/folder metadata

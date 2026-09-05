@@ -11,7 +11,7 @@
 import { Router, Request, Response } from 'express';
 import { sendApiError, AppError } from '../utils/errors.js';
 import { ApiResponse, ErrorCode } from '../../types/api.js';
-import { checkDatabaseHealth } from '../../db/client.js';
+import { checkDatabaseHealth, query } from '../../db/client.js';
 import { UserService } from '../services/UserService.js';
 import { requireAuth, optionalAuth, SESSION_COOKIE_NAME, getSessionCookieOptions, extractSessionToken } from './middleware/auth.js';
 import { accountService } from '../services/AccountService.js';
@@ -545,10 +545,27 @@ apiRouter.get('/auth/google/callback', handleGoogleOAuthCallback);
 /**
  * POST /api/accounts/:id/sync
  * Triggers metadata and quota refresh for an individual connected Google Drive account.
+ * Supports mode: 'delta' | 'full'. Defaults to delta sync when change token is established.
  */
 apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Response) => {
   try {
-    const syncResult = await syncService.syncAccount(req.user!.id, req.params.id);
+    const mode = req.body?.mode || req.query?.mode;
+    let syncResult;
+
+    if (mode === 'full') {
+      syncResult = await syncService.syncAccount(req.user!.id, req.params.id);
+    } else if (mode === 'delta') {
+      syncResult = await syncService.syncDelta(req.user!.id, req.params.id);
+    } else {
+      // Default: if change token exists, run incremental delta sync; otherwise run full sync
+      const token = await accountService.getChangeToken(req.user!.id, req.params.id);
+      if (token) {
+        syncResult = await syncService.syncDelta(req.user!.id, req.params.id);
+      } else {
+        syncResult = await syncService.syncAccount(req.user!.id, req.params.id);
+      }
+    }
+
     const updatedAccount = await accountService.getAccountById(req.user!.id, req.params.id);
     const pool = await storageService.getStoragePoolForUser(req.user!.id);
 
@@ -565,7 +582,98 @@ apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Resp
       },
       meta: {
         timestamp: new Date().toISOString(),
-        version: '1.2.0-phase2',
+        version: '1.3.0-phase3',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/accounts/:id/sync/delta
+ * Explicit endpoint for Phase 3 incremental delta synchronization via Google Drive Changes API.
+ */
+apiRouter.post('/accounts/:id/sync/delta', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const syncResult = await syncService.syncDelta(req.user!.id, req.params.id);
+    const updatedAccount = await accountService.getAccountById(req.user!.id, req.params.id);
+    const pool = await storageService.getStoragePoolForUser(req.user!.id);
+
+    const response: ApiResponse<{
+      syncResult: typeof syncResult;
+      account: typeof updatedAccount;
+      pool: typeof pool;
+    }> = {
+      success: true,
+      data: {
+        syncResult,
+        account: updatedAccount,
+        pool,
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.3.0-phase3',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/accounts/:id/token/init
+ * Establishes an initial Google Drive change token for an existing connected account.
+ */
+apiRouter.post('/accounts/:id/token/init', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const token = await syncService.establishInitialToken(req.user!.id, req.params.id);
+    const updatedAccount = await accountService.getAccountById(req.user!.id, req.params.id);
+
+    const response: ApiResponse<{
+      changeToken: string;
+      account: typeof updatedAccount;
+    }> = {
+      success: true,
+      data: {
+        changeToken: token,
+        account: updatedAccount,
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.3.0-phase3',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * GET /api/accounts/:id/sync/history
+ * Returns sync audit history records for an account (including full, delta, and recovery runs).
+ */
+apiRouter.get('/accounts/:id/sync/history', requireAuth, async (req: Request, res: Response) => {
+  try {
+    // Verify ownership
+    await accountService.getAccountById(req.user!.id, req.params.id);
+
+    const historyResult = await query(
+      `SELECT * FROM sync_history 
+       WHERE storage_account_id = $1 AND user_id = $2 
+       ORDER BY started_at DESC LIMIT 50`,
+      [req.params.id, req.user!.id]
+    );
+
+    const response: ApiResponse<any[]> = {
+      success: true,
+      data: historyResult.rows,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.3.0-phase3',
       },
     };
     res.json(response);

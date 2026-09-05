@@ -65,6 +65,7 @@ export class AccountService {
       lastSyncedAt: row.last_synced_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      driveChangeToken: row.drive_change_token || (row.provider_metadata as any)?.driveChangeToken || null,
       providerMetadata: row.provider_metadata,
     };
   }
@@ -281,6 +282,46 @@ export class AccountService {
         updated_at = $4
        WHERE id = $5 AND user_id = $6`,
       [quota.totalBytes, quota.usedBytes, quota.freeBytes, now, accountId, userId]
+    );
+  }
+
+  /**
+   * Retrieves persisted Google Drive change/page token for delta synchronization (Phase 3).
+   */
+  async getChangeToken(userId: string, accountId: string): Promise<string | null> {
+    const result = await query<DbStorageAccount>(
+      `SELECT drive_change_token, provider_metadata FROM storage_accounts 
+       WHERE id = $1 AND user_id = $2`,
+      [accountId, userId]
+    );
+
+    if (result.rowCount === 0) {
+      throw new AppError(
+        ErrorCode.RESOURCE_NOT_FOUND,
+        `Storage account ${accountId} was not found.`,
+        404
+      );
+    }
+
+    const row = result.rows[0];
+    return row.drive_change_token || (row.provider_metadata as any)?.driveChangeToken || null;
+  }
+
+  /**
+   * Persists a new Google Drive change/page token for an account after successful delta sync (Phase 3).
+   * Persists only after processing completes successfully.
+   */
+  async updateChangeToken(userId: string, accountId: string, changeToken: string): Promise<void> {
+    const now = new Date().toISOString();
+    const metaPatch = JSON.stringify({ driveChangeToken: changeToken });
+    await query(
+      `UPDATE storage_accounts SET
+        drive_change_token = $1,
+        provider_metadata = COALESCE(provider_metadata, '{}'::jsonb) || $2::jsonb,
+        last_synced_at = $3,
+        updated_at = $3
+       WHERE id = $4 AND user_id = $5`,
+      [changeToken, metaPatch, now, accountId, userId]
     );
   }
 

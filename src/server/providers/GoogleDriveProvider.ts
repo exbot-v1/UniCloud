@@ -18,12 +18,62 @@ import {
   ProviderFileMetadata,
   ProviderFileListOptions,
   ProviderFileListResult,
+  ProviderChangeItem,
+  ProviderChangeListOptions,
+  ProviderChangeListResult,
   ResumableUploadSession,
   ProviderHealthCheckResult,
 } from '../../types/provider.js';
 import { AppError } from '../utils/errors.js';
 import { ErrorCode } from '../../types/api.js';
 import { logger } from '../utils/logger.js';
+
+/**
+ * Detects whether an error returned from Google Drive Changes API represents
+ * an invalid, expired, or non-existent change token.
+ */
+export function isInvalidPageTokenError(err: any): boolean {
+  if (!err) return false;
+  const message = String(err.message || '').toLowerCase();
+  const status = err.status || err.statusCode || (err.response && err.response.status);
+
+  if (status === 404 || status === 410) {
+    return true;
+  }
+  if (status === 400 && (
+    message.includes('token') ||
+    message.includes('page') ||
+    message.includes('invalid') ||
+    message.includes('expired')
+  )) {
+    return true;
+  }
+  if (
+    message.includes('startpagetoken') ||
+    message.includes('invalidpagetoken') ||
+    message.includes('token expired') ||
+    message.includes('page token expired') ||
+    message.includes('token has expired') ||
+    message.includes('invalid change token')
+  ) {
+    return true;
+  }
+  const errors = err.errors || (err.response && err.response.data && err.response.data.error && err.response.data.error.errors);
+  if (Array.isArray(errors)) {
+    for (const e of errors) {
+      const reason = String(e.reason || '').toLowerCase();
+      if (
+        reason === 'startpagetokenexpired' ||
+        reason === 'invalidpagetoken' ||
+        reason === 'locationnotexists' ||
+        reason === 'notfound'
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 type OAuth2Client = InstanceType<typeof google.auth.OAuth2>;
 
@@ -297,6 +347,129 @@ export class GoogleDriveProvider implements StorageProvider {
       throw new AppError(
         ErrorCode.PROVIDER_ERROR,
         `Google Drive files query failed: ${err.message}`,
+        502
+      );
+    }
+  }
+
+  /**
+   * Retrieves current start page token from Google Drive v3 `changes.getStartPageToken` (Phase 3)
+   * used as baseline for future incremental changes tracking.
+   */
+  async getStartPageToken(accessToken: string): Promise<string> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+
+    const drive: drive_v3.Drive = this.getDriveClient(client);
+
+    try {
+      const res = await drive.changes.getStartPageToken({
+        supportsAllDrives: false,
+      });
+
+      const token = res.data.startPageToken;
+      if (!token) {
+        throw new AppError(
+          ErrorCode.PROVIDER_ERROR,
+          'Google Drive API did not return a startPageToken.',
+          502
+        );
+      }
+
+      return token;
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      logger.error('Failed to get Google Drive start page token', { error: err.message });
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Google Drive getStartPageToken failed: ${err.message}`,
+        502
+      );
+    }
+  }
+
+  /**
+   * Queries Google Drive v3 `changes.list` for incremental changes using a change/page token (Phase 3).
+   * Paginates through all available change pages and captures newStartPageToken.
+   */
+  async listChanges(accessToken: string, options: ProviderChangeListOptions): Promise<ProviderChangeListResult> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+
+    const drive: drive_v3.Drive = this.getDriveClient(client);
+
+    try {
+      const pageSize = Math.min(options.pageSize || 100, 100);
+      const maxPages = options.maxPages || 100;
+      const allChanges: ProviderChangeItem[] = [];
+      let currentPageToken: string | undefined = options.pageToken;
+      let newStartPageToken: string | undefined;
+      let pageCount = 0;
+
+      do {
+        const res = await drive.changes.list({
+          pageToken: currentPageToken,
+          pageSize,
+          fields: 'nextPageToken, newStartPageToken, changes(fileId, removed, time, file(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred))',
+          includeRemoved: options.includeRemoved ?? true,
+          supportsAllDrives: false,
+          includeItemsFromAllDrives: false,
+          restrictToMyDrive: options.restrictToMyDrive ?? true,
+        });
+
+        const pageChanges: ProviderChangeItem[] = (res.data.changes || []).map((c) => {
+          let fileMeta: ProviderFileMetadata | null = null;
+          if (c.file && !c.removed) {
+            fileMeta = {
+              providerFileId: c.file.id || c.fileId || '',
+              name: c.file.name || 'Untitled',
+              mimeType: c.file.mimeType || 'application/octet-stream',
+              sizeBytes: c.file.size ? Number(c.file.size) : 0,
+              parentFolderId: c.file.parents && c.file.parents.length > 0 ? c.file.parents[0] : null,
+              isFolder: c.file.mimeType === 'application/vnd.google-apps.folder',
+              webUrl: c.file.webViewLink || undefined,
+              md5Checksum: c.file.md5Checksum || undefined,
+              isStarred: Boolean(c.file.starred),
+              isTrashed: Boolean(c.file.trashed),
+              createdAt: c.file.createdTime || new Date().toISOString(),
+              modifiedAt: c.file.modifiedTime || new Date().toISOString(),
+            };
+          }
+
+          return {
+            fileId: c.fileId || (c.file && c.file.id) || '',
+            removed: Boolean(c.removed),
+            time: c.time || undefined,
+            file: fileMeta,
+          };
+        });
+
+        allChanges.push(...pageChanges);
+        currentPageToken = res.data.nextPageToken || undefined;
+        if (res.data.newStartPageToken) {
+          newStartPageToken = res.data.newStartPageToken;
+        }
+        pageCount++;
+      } while (currentPageToken && pageCount < maxPages);
+
+      // Pagination is complete when all change pages have been consumed
+      const paginationComplete = !currentPageToken;
+
+      return {
+        changes: allChanges,
+        newStartPageToken,
+        nextPageToken: currentPageToken,
+        paginationComplete,
+      };
+    } catch (err: any) {
+      if (isInvalidPageTokenError(err)) {
+        throw err; // Re-throw directly so caller can detect token expiry and trigger recovery
+      }
+      if (err instanceof AppError) throw err;
+      logger.error('Failed to list Google Drive changes', { error: err.message });
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Google Drive changes query failed: ${err.message}`,
         502
       );
     }

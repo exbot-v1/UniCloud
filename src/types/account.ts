@@ -52,6 +52,8 @@ export interface StorageAccount {
   lastSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Persisted Google Drive change token for delta sync (Phase 3) */
+  driveChangeToken?: string | null;
   /** Metadata specific to the provider */
   providerMetadata?: Record<string, unknown>;
 }
