@@ -222,8 +222,8 @@ Google Drive #01     Google Drive #02     Google Drive #03
                 { phase: 'Phase 0', title: 'Master Architecture & Foundation', done: true, notes: 'Schema DDL, StorageProvider abstraction, AES encryption, UI shell, Express/Vite server.' },
                 { phase: 'Phase 1', title: 'Database Setup & User Authentication', done: true, notes: 'PostgreSQL connectivity, user sessions, bcrypt hashing, tenant isolation.' },
                 { phase: 'Phase 2.1.1 (Complete)', title: 'Google Drive Sync Integrity Hardened', done: true, notes: 'Multi-account server-side OAuth flow, token encryption at rest, live quota retrieval, metadata sync integrity & guarded reconciliation.' },
-                { phase: 'Phase 3', title: 'Virtual Filesystem Delta Synchronization', done: false, notes: 'Sync Google Drive changes to virtual_files and virtual_folders; implement file rename/trash.' },
-                { phase: 'Phase 4', title: 'Resumable Upload Engine & Routing', done: false, notes: 'Direct chunked uploads to Google Drive with automated quota balancer.' },
+                { phase: 'Phase 3', title: 'Virtual Filesystem Delta Synchronization', done: true, notes: 'Sync Google Drive changes to virtual_files and virtual_folders; implement file rename/trash.' },
+                { phase: 'Phase 4', title: 'Resumable Upload Engine & Multi-Account Routing', done: true, notes: 'Direct chunked uploads to Google Drive with automated quota balancer, live progress tracking, session recovery/retry, and manual/auto/balanced routing.' },
                 { phase: 'Phase 5', title: 'Unified Search & Quota Optimization', done: false, notes: 'Cross-account search, trash recovery, and intelligent file relocation.' },
               ].map((p) => (
                 <div

@@ -55,6 +55,7 @@ export class AccountService {
       displayName: row.display_name || undefined,
       avatarUrl: row.avatar_url || undefined,
       status: row.status as AccountStatus,
+      isEnabled: row.is_enabled !== false,
       tokenExpiresAt: row.token_expires_at,
       quota: {
         totalBytes: total,
@@ -266,6 +267,16 @@ export class AccountService {
       email: row.email,
       provider: row.provider as ProviderType,
     };
+  }
+
+  /**
+   * Retrieves a refreshed, valid access token for the given account (Phase 4).
+   */
+  async getValidAccessToken(userId: string, accountId: string): Promise<string> {
+    const credentials = await this.getDecryptedCredentials(userId, accountId);
+    const provider = ProviderRegistry.get(credentials.provider) as GoogleDriveProvider;
+    const auth = await provider.refreshAuthentication(credentials.refreshToken);
+    return auth.accessToken;
   }
 
   /**

@@ -195,6 +195,27 @@ export async function ensureSchema(): Promise<void> {
 
       CREATE INDEX IF NOT EXISTS idx_sync_history_account ON sync_history(storage_account_id, started_at DESC);
 
+      CREATE TABLE IF NOT EXISTS upload_jobs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        storage_account_id UUID REFERENCES storage_accounts(id) ON DELETE SET NULL,
+        target_folder_id UUID REFERENCES virtual_folders(id) ON DELETE SET NULL,
+        file_name VARCHAR(255) NOT NULL,
+        mime_type VARCHAR(150) NOT NULL,
+        total_size_bytes BIGINT NOT NULL,
+        bytes_uploaded BIGINT NOT NULL DEFAULT 0,
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        routing_strategy VARCHAR(50) NOT NULL DEFAULT 'most_free_space',
+        routing_reason TEXT,
+        resumable_session_url TEXT,
+        error_message TEXT,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_upload_jobs_user_status ON upload_jobs(user_id, status);
+
       -- Migration: Ensure drive_change_token exists for Delta Sync (Phase 3)
       ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS drive_change_token TEXT;
     `);
@@ -223,6 +244,7 @@ interface MemoryDb {
   virtualFiles: Map<string, any>;
   oauthStates: Map<string, any>;
   syncHistory: Map<string, any>;
+  uploadJobs: Map<string, any>;
 }
 
 const memoryDb: MemoryDb = {
@@ -233,6 +255,7 @@ const memoryDb: MemoryDb = {
   virtualFiles: new Map(),
   oauthStates: new Map(),
   syncHistory: new Map(),
+  uploadJobs: new Map(),
 };
 
 /**
@@ -525,6 +548,11 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     const acc = memoryDb.storageAccounts.get(id);
     if (acc) {
       acc.updated_at = new Date().toISOString();
+      if (/used_bytes\s*=\s*used_bytes\s*\+/i.test(normalizedSql)) {
+        const delta = Number(params[0]) || 0;
+        acc.used_bytes = Number(acc.used_bytes || 0) + delta;
+        acc.free_bytes = Math.max(0, Number(acc.free_bytes || 0) - delta);
+      }
       if (/drive_change_token/i.test(normalizedSql)) {
         acc.drive_change_token = params[0];
         if (typeof acc.provider_metadata === 'object' && acc.provider_metadata !== null) {
@@ -1045,6 +1073,87 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       list.sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''));
     }
     return { rows: list as any[], rowCount: list.length };
+  }
+
+  // 8. Upload Jobs (Phase 4)
+  if (/INSERT INTO upload_jobs/i.test(normalizedSql)) {
+    const jobRecord = {
+      id: params[0],
+      user_id: params[1],
+      storage_account_id: params[2] || null,
+      target_folder_id: params[3] || null,
+      file_name: params[4],
+      mime_type: params[5],
+      total_size_bytes: Number(params[6]) || 0,
+      bytes_uploaded: Number(params[7]) || 0,
+      status: params[8] || 'pending',
+      routing_strategy: params[9] || 'most_free_space',
+      routing_reason: params[10] || null,
+      resumable_session_url: params[11] || null,
+      error_message: params[12] || null,
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      updated_at: new Date().toISOString(),
+    };
+    memoryDb.uploadJobs.set(jobRecord.id, jobRecord);
+    return { rows: [jobRecord as any], rowCount: 1 };
+  }
+
+  if (/SELECT .* FROM upload_jobs WHERE id = .* AND user_id =/i.test(normalizedSql)) {
+    const id = params[0];
+    const userId = params[1];
+    const job = memoryDb.uploadJobs.get(id);
+    if (job && job.user_id === userId) {
+      return { rows: [job as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+
+  if (/SELECT .* FROM upload_jobs WHERE user_id =/i.test(normalizedSql)) {
+    const userId = params[0];
+    let list = Array.from(memoryDb.uploadJobs.values()).filter(j => j.user_id === userId);
+    if (/ORDER BY .* DESC/i.test(normalizedSql)) {
+      list.sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''));
+    }
+    return { rows: list as any[], rowCount: list.length };
+  }
+
+  if (/UPDATE upload_jobs SET/i.test(normalizedSql)) {
+    const jobId = params[params.length - 2];
+    const userId = params[params.length - 1];
+    const job = memoryDb.uploadJobs.get(jobId);
+    if (job && job.user_id === userId) {
+      job.updated_at = new Date().toISOString();
+      if (/bytes_uploaded\s*=/i.test(normalizedSql)) {
+        job.bytes_uploaded = Number(params[0]) || 0;
+      }
+      for (const p of params) {
+        if (typeof p === 'string' && ['pending', 'routed', 'initializing', 'uploading', 'completed', 'failed', 'aborted'].includes(p)) {
+          job.status = p;
+          break;
+        }
+      }
+      if (/completed_at/i.test(normalizedSql) && job.status === 'completed') {
+        job.completed_at = new Date().toISOString();
+      }
+      if (/error_message/i.test(normalizedSql)) {
+        for (let i = 0; i < params.length - 2; i++) {
+          if (typeof params[i] === 'string' && params[i] !== job.status && !params[i].startsWith('http')) {
+            job.error_message = params[i];
+          }
+        }
+      }
+      if (/resumable_session_url\s*=/i.test(normalizedSql)) {
+        for (let i = 0; i < params.length - 2; i++) {
+          if (typeof params[i] === 'string' && params[i].startsWith('http')) {
+            job.resumable_session_url = params[i];
+            break;
+          }
+        }
+      }
+      return { rows: [job as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
   }
 
   // Fallback generic empty

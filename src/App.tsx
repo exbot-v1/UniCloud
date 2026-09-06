@@ -306,11 +306,12 @@ export default function App() {
         onAuthSuccess={handleAuthSuccess}
       />
 
-      {/* Upload Routing Simulator Modal */}
+      {/* Resumable Upload & Capacity Router Modal (Phase 4) */}
       <UploadModal
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}
         poolSummary={poolSummary}
+        onUploadSuccess={() => loadUserData()}
       />
 
       {/* Connect Account Architectural Modal */}

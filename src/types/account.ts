@@ -47,6 +47,7 @@ export interface StorageAccount {
   displayName?: string;
   avatarUrl?: string;
   status: AccountStatus;
+  isEnabled?: boolean;
   tokenExpiresAt: string | null;
   quota: StorageQuota;
   lastSyncedAt: string | null;

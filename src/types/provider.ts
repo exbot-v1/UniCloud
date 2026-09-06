@@ -141,6 +141,23 @@ export interface StorageProvider {
   ): Promise<ResumableUploadSession>;
 
   /**
+   * Uploads a byte chunk to an active resumable upload session (Phase 4)
+   */
+  uploadChunk?(
+    uploadUri: string,
+    chunk: Buffer | Uint8Array,
+    options: { startByte: number; endByte: number; totalBytes: number; mimeType?: string }
+  ): Promise<{ completed: boolean; bytesUploaded: number; file?: ProviderFileMetadata }>;
+
+  /**
+   * Queries upstream status/progress of an active resumable upload session (Phase 4)
+   */
+  getUploadStatus?(
+    uploadUri: string,
+    totalBytes: number
+  ): Promise<{ completed: boolean; bytesUploaded: number; file?: ProviderFileMetadata }>;
+
+  /**
    * Deletes a file or moves it to trash on the provider
    */
   deleteFile(accessToken: string, providerFileId: string, permanent?: boolean): Promise<void>;

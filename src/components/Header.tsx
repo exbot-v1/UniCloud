@@ -77,19 +77,19 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Architecture Status Badge */}
         <div className="hidden lg:flex items-center gap-1.5 px-3 py-1 bg-cyan-950/50 border border-cyan-800/60 rounded-full text-xs text-cyan-300 font-medium">
           <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" />
-          <span>Phase 2.1.1 — Google Drive Connected</span>
+          <span>Phase 4 — Resumable Uploads & Routing</span>
         </div>
 
-        {/* Upload Action Button - Planned Phase 4 */}
+        {/* Upload Action Button */}
         <button
           id="btn-quick-upload"
-          disabled
-          title="File uploads are planned for Phase 4."
-          className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#1a202c] text-slate-400 rounded-xl text-xs sm:text-sm font-semibold border border-[#262c36] cursor-not-allowed opacity-80"
+          onClick={onOpenUpload}
+          title="Upload files with automated multi-account capacity routing"
+          className="inline-flex items-center gap-2 px-3.5 py-2 bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-cyan-950/40 border border-cyan-400/40 transition-all active:scale-[0.98] cursor-pointer"
         >
-          <UploadCloud className="h-4 w-4 text-slate-400" />
-          <span className="hidden sm:inline">Uploads — Phase 4</span>
-          <span className="sm:hidden">Phase 4</span>
+          <UploadCloud className="h-4 w-4 text-white" />
+          <span className="hidden sm:inline">Upload File</span>
+          <span className="sm:hidden">Upload</span>
         </button>
 
         {/* User Profile / Auth State */}

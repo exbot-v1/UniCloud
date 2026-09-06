@@ -594,14 +594,221 @@ export class GoogleDriveProvider implements StorageProvider {
   }
 
   /**
-   * Initiates a resumable upload session (prepared for Phase 4).
+   * Initiates a resumable upload session with Google Drive API v3 (Phase 4).
+   * Makes POST to https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable
+   * Returns session URI for chunk streaming.
    */
-  async initiateResumableUpload(): Promise<ResumableUploadSession> {
-    throw new AppError(
-      ErrorCode.NOT_IMPLEMENTED,
-      'Resumable upload session initialization is scheduled for Phase 4: Resumable Upload Engine.',
-      501
-    );
+  async initiateResumableUpload(
+    accessToken: string,
+    metadata: { name: string; mimeType: string; sizeBytes: number; parentFolderId?: string }
+  ): Promise<ResumableUploadSession> {
+    try {
+      const url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable';
+      const bodyMetadata: Record<string, any> = {
+        name: metadata.name,
+        mimeType: metadata.mimeType || 'application/octet-stream',
+      };
+      if (metadata.parentFolderId) {
+        bodyMetadata.parents = [metadata.parentFolderId];
+      }
+
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Type': metadata.mimeType || 'application/octet-stream',
+      };
+      if (metadata.sizeBytes && metadata.sizeBytes > 0) {
+        headers['X-Upload-Content-Length'] = String(metadata.sizeBytes);
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(bodyMetadata),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        logger.error('Google Drive initiate resumable upload failed', {
+          status: response.status,
+          error: errText,
+        });
+        throw new AppError(
+          ErrorCode.PROVIDER_ERROR,
+          `Google Drive failed to initiate resumable upload: ${response.status} ${errText}`,
+          502
+        );
+      }
+
+      const uploadUri = response.headers.get('location');
+      if (!uploadUri) {
+        throw new AppError(
+          ErrorCode.PROVIDER_ERROR,
+          'Google Drive did not return a resumable session Location URI',
+          502
+        );
+      }
+
+      return {
+        sessionId: crypto.randomUUID(),
+        uploadUri,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        chunkSizeBytes: 5 * 1024 * 1024, // 5MB standard chunk recommendation
+      };
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Failed to initiate Google Drive upload session: ${err.message}`,
+        502
+      );
+    }
+  }
+
+  /**
+   * Uploads a chunk of data to the Google Drive resumable session URL (Phase 4).
+   */
+  async uploadChunk(
+    uploadUri: string,
+    chunk: Buffer | Uint8Array,
+    options: { startByte: number; endByte: number; totalBytes: number; mimeType?: string }
+  ): Promise<{ completed: boolean; bytesUploaded: number; file?: ProviderFileMetadata }> {
+    try {
+      const headers: Record<string, string> = {
+        'Content-Length': String(chunk.byteLength),
+        'Content-Range': `bytes ${options.startByte}-${options.endByte}/${options.totalBytes}`,
+        'Content-Type': options.mimeType || 'application/octet-stream',
+      };
+
+      const response = await fetch(uploadUri, {
+        method: 'PUT',
+        headers,
+        body: chunk,
+      });
+
+      if (response.status === 308) {
+        // Incomplete upload - more chunks required
+        const range = response.headers.get('range');
+        let bytesUploaded = options.endByte + 1;
+        if (range) {
+          const match = /bytes=0-(\d+)/.exec(range);
+          if (match) {
+            bytesUploaded = parseInt(match[1], 10) + 1;
+          }
+        }
+        return {
+          completed: false,
+          bytesUploaded,
+        };
+      }
+
+      if (response.status === 200 || response.status === 201) {
+        const data = (await response.json()) as drive_v3.Schema$File;
+        const fileMetadata: ProviderFileMetadata = {
+          providerFileId: data.id || '',
+          name: data.name || '',
+          mimeType: data.mimeType || 'application/octet-stream',
+          sizeBytes: Number(data.size || options.totalBytes),
+          isFolder: false,
+          webUrl: data.webViewLink || undefined,
+          md5Checksum: data.md5Checksum || undefined,
+          createdAt: data.createdTime || new Date().toISOString(),
+          modifiedAt: data.modifiedTime || new Date().toISOString(),
+        };
+        return {
+          completed: true,
+          bytesUploaded: options.totalBytes,
+          file: fileMetadata,
+        };
+      }
+
+      const errText = await response.text().catch(() => '');
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Google Drive resumable chunk upload failed with status ${response.status}: ${errText}`,
+        502
+      );
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Failed to upload chunk to Google Drive: ${err.message}`,
+        502
+      );
+    }
+  }
+
+  /**
+   * Queries upstream status of an active resumable upload session (Phase 4).
+   */
+  async getUploadStatus(
+    uploadUri: string,
+    totalBytes: number
+  ): Promise<{ completed: boolean; bytesUploaded: number; file?: ProviderFileMetadata }> {
+    try {
+      const response = await fetch(uploadUri, {
+        method: 'PUT',
+        headers: {
+          'Content-Length': '0',
+          'Content-Range': `bytes */${totalBytes}`,
+        },
+      });
+
+      if (response.status === 308) {
+        const range = response.headers.get('range');
+        let bytesUploaded = 0;
+        if (range) {
+          const match = /bytes=0-(\d+)/.exec(range);
+          if (match) {
+            bytesUploaded = parseInt(match[1], 10) + 1;
+          }
+        }
+        return {
+          completed: false,
+          bytesUploaded,
+        };
+      }
+
+      if (response.status === 200 || response.status === 201) {
+        const data = (await response.json()) as drive_v3.Schema$File;
+        return {
+          completed: true,
+          bytesUploaded: totalBytes,
+          file: {
+            providerFileId: data.id || '',
+            name: data.name || '',
+            mimeType: data.mimeType || 'application/octet-stream',
+            sizeBytes: Number(data.size || totalBytes),
+            isFolder: false,
+            webUrl: data.webViewLink || undefined,
+            md5Checksum: data.md5Checksum || undefined,
+            createdAt: data.createdTime || new Date().toISOString(),
+            modifiedAt: data.modifiedTime || new Date().toISOString(),
+          },
+        };
+      }
+
+      if (response.status === 404 || response.status === 410) {
+        throw new AppError(
+          ErrorCode.NOT_FOUND,
+          'Resumable upload session has expired or does not exist.',
+          404
+        );
+      }
+
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Failed to query Google Drive upload status: ${response.status}`,
+        502
+      );
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      throw new AppError(
+        ErrorCode.PROVIDER_ERROR,
+        `Failed to check Google Drive upload status: ${err.message}`,
+        502
+      );
+    }
   }
 
   /**

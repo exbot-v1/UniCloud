@@ -8,7 +8,7 @@
  * error boundaries, and unified response envelopes.
  */
 
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import { sendApiError, AppError } from '../utils/errors.js';
 import { ApiResponse, ErrorCode } from '../../types/api.js';
 import { checkDatabaseHealth, query } from '../../db/client.js';
@@ -963,7 +963,8 @@ apiRouter.post('/upload/route-check', optionalAuth, async (req: Request, res: Re
     const decision = uploadService.evaluateRouting(
       accounts,
       sizeBytes,
-      strategy || UploadRoutingStrategy.MOST_FREE_SPACE
+      strategy || UploadRoutingStrategy.MOST_FREE_SPACE,
+      req.body.preferredAccountId
     );
 
     const response: ApiResponse<typeof decision> = {
@@ -971,7 +972,238 @@ apiRouter.post('/upload/route-check', optionalAuth, async (req: Request, res: Re
       data: decision,
       meta: {
         timestamp: new Date().toISOString(),
-        version: '1.1.0-phase1',
+        version: '1.4.0-phase4',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+// =============================================================================
+// 6. PHASE 4 RESUMABLE UPLOADS & UPLOAD ROUTING
+// =============================================================================
+
+/**
+ * POST /api/upload/initiate
+ * Evaluates routing, establishes Google Drive resumable session, and persists upload job.
+ */
+apiRouter.post('/upload/initiate', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const job = await uploadService.initiateUpload(req.user!.id, req.body);
+    const response: ApiResponse<typeof job> = {
+      success: true,
+      data: job,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.4.0-phase4',
+      },
+    };
+    res.status(201).json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * PUT /api/upload/:jobId/chunk
+ * Streams/chunks binary data directly to Google Drive upstream session.
+ * Updates byte progress and finalizes virtual file mapping on completion.
+ */
+apiRouter.put(
+  '/upload/:jobId/chunk',
+  requireAuth,
+  express.raw({ type: () => true, limit: '50mb' }),
+  async (req: Request, res: Response) => {
+    try {
+      const { jobId } = req.params;
+      const contentRange = req.headers['content-range'] as string | undefined;
+      const chunkBuffer = Buffer.isBuffer(req.body)
+        ? req.body
+        : Buffer.from(req.body || '');
+
+      const result = await uploadService.uploadChunk(
+        req.user!.id,
+        jobId,
+        chunkBuffer,
+        contentRange
+      );
+
+      const response: ApiResponse<typeof result> = {
+        success: true,
+        data: result,
+        meta: {
+          timestamp: new Date().toISOString(),
+          version: '1.4.0-phase4',
+        },
+      };
+      res.json(response);
+    } catch (err) {
+      sendApiError(res, err);
+    }
+  }
+);
+
+/**
+ * POST /api/upload/stream
+ * Direct streaming upload for large files without buffering entire file in memory.
+ */
+apiRouter.post('/upload/stream', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const fileName =
+      (req.query.fileName as string) ||
+      (req.headers['x-file-name'] as string) ||
+      'upload.bin';
+    const mimeType =
+      (req.query.mimeType as string) ||
+      (req.headers['content-type'] as string) ||
+      'application/octet-stream';
+    const sizeBytes = Number(req.query.sizeBytes || req.headers['content-length'] || 0);
+    const targetFolderId = (req.query.targetFolderId as string) || undefined;
+    const strategy = (req.query.strategy as UploadRoutingStrategy) || undefined;
+    const preferredAccountId = (req.query.preferredAccountId as string) || undefined;
+
+    if (!sizeBytes || sizeBytes <= 0) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        'Content-Length header or sizeBytes query parameter required.',
+        400
+      );
+    }
+
+    const job = await uploadService.initiateUpload(req.user!.id, {
+      fileName,
+      mimeType,
+      sizeBytes,
+      targetFolderId,
+      strategy,
+      preferredAccountId,
+    });
+
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB buffer chunks
+    let buffer = Buffer.alloc(0);
+    let bytesUploaded = 0;
+    let lastResult: any = null;
+
+    for await (const data of req) {
+      buffer = Buffer.concat([buffer, data]);
+      while (buffer.length >= CHUNK_SIZE && bytesUploaded + CHUNK_SIZE <= sizeBytes) {
+        const chunk = buffer.subarray(0, CHUNK_SIZE);
+        buffer = buffer.subarray(CHUNK_SIZE);
+        const start = bytesUploaded;
+        const end = start + chunk.length - 1;
+        lastResult = await uploadService.uploadChunk(
+          req.user!.id,
+          job.id,
+          chunk,
+          `bytes ${start}-${end}/${sizeBytes}`
+        );
+        bytesUploaded += chunk.length;
+      }
+    }
+
+    if (buffer.length > 0 || bytesUploaded < sizeBytes) {
+      const start = bytesUploaded;
+      const end = start + buffer.length - 1;
+      lastResult = await uploadService.uploadChunk(
+        req.user!.id,
+        job.id,
+        buffer,
+        `bytes ${start}-${end}/${sizeBytes}`
+      );
+    }
+
+    const response: ApiResponse<typeof lastResult> = {
+      success: true,
+      data: lastResult || job,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.4.0-phase4',
+      },
+    };
+    res.status(201).json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * GET /api/upload/:jobId/status
+ * Queries the current progress and status of an upload job.
+ */
+apiRouter.get('/upload/:jobId/status', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const job = await uploadService.getJobStatus(req.user!.id, req.params.jobId);
+    const response: ApiResponse<typeof job> = {
+      success: true,
+      data: job,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.4.0-phase4',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/upload/:jobId/abort
+ * Cancels an upload job without corrupting the virtual filesystem.
+ */
+apiRouter.post('/upload/:jobId/abort', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const job = await uploadService.abortUpload(req.user!.id, req.params.jobId);
+    const response: ApiResponse<typeof job> = {
+      success: true,
+      data: job,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.4.0-phase4',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/upload/:jobId/retry
+ * Attempts session recovery or re-initialization of an interrupted upload.
+ */
+apiRouter.post('/upload/:jobId/retry', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const job = await uploadService.retryUpload(req.user!.id, req.params.jobId);
+    const response: ApiResponse<typeof job> = {
+      success: true,
+      data: job,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.4.0-phase4',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * GET /api/upload/jobs
+ * Lists recent upload jobs for the authenticated user.
+ */
+apiRouter.get('/upload/jobs', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const jobs = await uploadService.listJobs(req.user!.id, 25);
+    const response: ApiResponse<typeof jobs> = {
+      success: true,
+      data: jobs,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.4.0-phase4',
       },
     };
     res.json(response);
