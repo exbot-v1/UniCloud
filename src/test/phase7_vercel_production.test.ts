@@ -32,6 +32,10 @@ import { getPool, ensureSchema, query } from '../db/client.js';
 import { UserService } from '../server/services/UserService.js';
 import { ProviderRegistry } from '../server/providers/ProviderRegistry.js';
 import { ProviderType } from '../types/account.js';
+import { SESSION_COOKIE_NAME, getSessionCookieOptions, getClearCookieOptions } from '../server/api/middleware/auth.js';
+import { getGoogleRedirectUri } from '../server/api/routes.js';
+import { GoogleDriveProvider } from '../server/providers/GoogleDriveProvider.js';
+import { OAuthStateService } from '../server/services/OAuthStateService.js';
 
 /**
  * Mock Request & Response harness for testing Express applications and serverless handlers
@@ -40,6 +44,7 @@ function createMockHttp(options: {
   method?: string;
   url: string;
   headers?: Record<string, string>;
+  cookies?: Record<string, string>;
   body?: any;
 }) {
   const req: any = new EventEmitter();
@@ -48,13 +53,15 @@ function createMockHttp(options: {
   req.originalUrl = options.url;
   req.path = options.url.split('?')[0];
   req.headers = options.headers || {};
-  req.cookies = {};
+  req.cookies = options.cookies || {};
   req.query = {};
   req.body = options.body;
 
   const res: any = {
     statusCode: 200,
     headers: {} as Record<string, string>,
+    cookiesSet: [] as { name: string; val: any; options: any }[],
+    cookiesCleared: [] as { name: string; options: any }[],
     body: null as any,
     ended: false,
     setHeader(key: string, val: string) {
@@ -66,6 +73,23 @@ function createMockHttp(options: {
     },
     status(code: number) {
       this.statusCode = code;
+      return this;
+    },
+    cookie(name: string, val: any, options: any) {
+      this.cookiesSet.push({ name, val, options });
+      return this;
+    },
+    clearCookie(name: string, options: any) {
+      this.cookiesCleared.push({ name, options });
+      return this;
+    },
+    redirect(statusOrUrl: number | string, optUrl?: string) {
+      const code = typeof statusOrUrl === 'number' ? statusOrUrl : 302;
+      const url = typeof statusOrUrl === 'string' ? statusOrUrl : (optUrl || '/');
+      this.statusCode = code;
+      this.setHeader('location', url);
+      this.ended = true;
+      req.emit('end');
       return this;
     },
     json(data: any) {
@@ -524,6 +548,285 @@ describe('UniCloud Phase 7: Production & Vercel Deployment Readiness', () => {
       assert.equal(provider.providerType, ProviderType.GOOGLE_DRIVE);
       assert.ok(Array.isArray(ProviderRegistry.supportedProviders()));
       assert.ok(ProviderRegistry.supportedProviders().includes(ProviderType.GOOGLE_DRIVE));
+    });
+  });
+
+  describe('8. P7.3 Production Authentication & Google OAuth Canonicalization', () => {
+    test('POST /api/auth/login sets persistent HTTP-only cookie and does NOT expose raw session token in response body', async () => {
+      // Ensure test user exists
+      const testEmail = 'socialdoodle7@gmail.com';
+      const testPassword = 'Password123!';
+
+      const { req, res } = createMockHttp({
+        method: 'POST',
+        url: '/api/auth/login',
+        body: { email: testEmail, password: testPassword },
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalJson = res.json.bind(res);
+        res.json = (data: any) => {
+          originalJson(data);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.success, true);
+      assert.ok(res.body.data.user);
+      assert.equal(res.body.data.user.email, testEmail);
+
+      // CRITICAL: Raw session token MUST NOT be in response body
+      assert.equal(res.body.data.sessionToken, undefined);
+
+      // Verify persistent HTTP-only cookie was set with correct options
+      assert.ok(res.cookiesSet.length > 0);
+      const cookie = res.cookiesSet.find((c: any) => c.name === SESSION_COOKIE_NAME);
+      assert.ok(cookie, 'SESSION_COOKIE_NAME should be set');
+      assert.ok(typeof cookie.val === 'string' && cookie.val.length > 20);
+      assert.equal(cookie.options.httpOnly, true);
+      assert.equal(cookie.options.path, '/');
+      assert.equal(cookie.options.sameSite, 'lax');
+      assert.equal(cookie.options.maxAge, 7 * 24 * 60 * 60 * 1000);
+    });
+
+    test('GET /api/auth/me reliably restores authenticated session via HTTP-only cookie without Bearer header', async () => {
+      // 1. Authenticate first to acquire session token
+      const session = await UserService.authenticateUser({
+        email: 'socialdoodle7@gmail.com',
+        password: 'Password123!',
+      });
+      assert.ok(session.sessionToken);
+
+      // 2. Request /api/auth/me with cookie ONLY (no authorization header)
+      const { req, res } = createMockHttp({
+        method: 'GET',
+        url: '/api/auth/me',
+        cookies: {
+          [SESSION_COOKIE_NAME]: session.sessionToken,
+        },
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalJson = res.json.bind(res);
+        res.json = (data: any) => {
+          originalJson(data);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.success, true);
+      assert.ok(res.body.data);
+      assert.equal(res.body.data.email, 'socialdoodle7@gmail.com');
+    });
+
+    test('POST /api/auth/logout invalidates session in database and clears browser cookie without deprecated maxAge', async () => {
+      // 1. Create a session to log out
+      const session = await UserService.authenticateUser({
+        email: 'socialdoodle7@gmail.com',
+        password: 'Password123!',
+      });
+      const token = session.sessionToken;
+
+      // 2. Call logout with cookie
+      const { req, res } = createMockHttp({
+        method: 'POST',
+        url: '/api/auth/logout',
+        cookies: {
+          [SESSION_COOKIE_NAME]: token,
+        },
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalJson = res.json.bind(res);
+        res.json = (data: any) => {
+          originalJson(data);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.success, true);
+
+      // Verify cookie was cleared
+      const cleared = res.cookiesCleared.find((c: any) => c.name === SESSION_COOKIE_NAME);
+      assert.ok(cleared, 'Session cookie should be cleared on logout');
+      assert.equal(cleared.options.httpOnly, true);
+      assert.equal(cleared.options.path, '/');
+      assert.equal(cleared.options.sameSite, 'lax');
+      assert.equal(cleared.options.maxAge, undefined, 'maxAge must not be passed to clearCookie');
+
+      // Verify session is invalidated in DB
+      const validated = await UserService.validateSession(token);
+      assert.equal(validated, null, 'Session must be invalidated in database');
+    });
+
+    test('Protected route rejects invalid session and clears cookie without deprecated maxAge', async () => {
+      const { req, res } = createMockHttp({
+        method: 'GET',
+        url: '/api/accounts',
+        cookies: {
+          [SESSION_COOKIE_NAME]: 'invalid-and-nonexistent-session-token-12345',
+        },
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalJson = res.json.bind(res);
+        res.json = (data: any) => {
+          originalJson(data);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      assert.equal(res.statusCode, 401);
+      assert.equal(res.body.success, false);
+      assert.equal(res.body.error.code, ErrorCode.UNAUTHORIZED);
+
+      // Verify cookie was cleared
+      const cleared = res.cookiesCleared.find((c: any) => c.name === SESSION_COOKIE_NAME);
+      assert.ok(cleared, 'Invalid session cookie should be cleared');
+      assert.equal(cleared.options.httpOnly, true);
+      assert.equal(cleared.options.path, '/');
+      assert.equal(cleared.options.maxAge, undefined);
+    });
+
+    test('getGoogleRedirectUri canonicalizes all configurations to /api/accounts/google/callback', () => {
+      const prevRedirect = process.env.GOOGLE_REDIRECT_URI;
+      const prevAppUrl = process.env.APP_URL;
+
+      try {
+        // Case 1: Legacy ambiguous path normalizes to canonical callback
+        process.env.GOOGLE_REDIRECT_URI = 'https://unicloud1.vercel.app/api/auth/google/callback';
+        delete process.env.APP_URL;
+        assert.equal(
+          getGoogleRedirectUri(),
+          'https://unicloud1.vercel.app/api/accounts/google/callback'
+        );
+
+        // Case 2: Origin root URL normalizes to canonical callback
+        process.env.GOOGLE_REDIRECT_URI = 'https://unicloud1.vercel.app';
+        assert.equal(
+          getGoogleRedirectUri(),
+          'https://unicloud1.vercel.app/api/accounts/google/callback'
+        );
+
+        // Case 3: Canonical path is preserved as-is
+        process.env.GOOGLE_REDIRECT_URI = 'https://unicloud1.vercel.app/api/accounts/google/callback';
+        assert.equal(
+          getGoogleRedirectUri(),
+          'https://unicloud1.vercel.app/api/accounts/google/callback'
+        );
+
+        // Case 4: APP_URL fallback resolves to canonical callback
+        delete process.env.GOOGLE_REDIRECT_URI;
+        process.env.APP_URL = 'https://custom-domain.com';
+        assert.equal(
+          getGoogleRedirectUri(),
+          'https://custom-domain.com/api/accounts/google/callback'
+        );
+      } finally {
+        if (prevRedirect) process.env.GOOGLE_REDIRECT_URI = prevRedirect;
+        else delete process.env.GOOGLE_REDIRECT_URI;
+        if (prevAppUrl) process.env.APP_URL = prevAppUrl;
+        else delete process.env.APP_URL;
+      }
+    });
+
+    test('OAuth authorization URL and OAuthStateService both use the canonical redirect URI', async () => {
+      const prevClientId = process.env.GOOGLE_CLIENT_ID;
+      const prevClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+      const prevRedirect = process.env.GOOGLE_REDIRECT_URI;
+
+      try {
+        process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+        process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
+        process.env.GOOGLE_REDIRECT_URI = 'https://unicloud1.vercel.app/api/accounts/google/callback';
+
+        const canonicalUri = getGoogleRedirectUri();
+        assert.equal(canonicalUri, 'https://unicloud1.vercel.app/api/accounts/google/callback');
+
+        // Verify provider generates auth URL with canonical redirect_uri
+        const provider = ProviderRegistry.get(ProviderType.GOOGLE_DRIVE) as GoogleDriveProvider;
+        const authUrl = provider.getAuthorizationUrl('test-csrf-state-token', canonicalUri);
+        assert.ok(authUrl.includes(encodeURIComponent('https://unicloud1.vercel.app/api/accounts/google/callback')));
+
+        // Verify state service records the canonical redirect URI
+        const stateToken = await OAuthStateService.createState('test-user-id-p73', canonicalUri);
+        assert.ok(stateToken);
+
+        const verified = await OAuthStateService.verifyAndConsumeState(stateToken, {
+          expectedProvider: ProviderType.GOOGLE_DRIVE,
+          expectedUserId: 'test-user-id-p73',
+        });
+        assert.equal(verified.userId, 'test-user-id-p73');
+        assert.equal(verified.redirectUri, canonicalUri);
+      } finally {
+        if (prevClientId) process.env.GOOGLE_CLIENT_ID = prevClientId;
+        else delete process.env.GOOGLE_CLIENT_ID;
+        if (prevClientSecret) process.env.GOOGLE_CLIENT_SECRET = prevClientSecret;
+        else delete process.env.GOOGLE_CLIENT_SECRET;
+        if (prevRedirect) process.env.GOOGLE_REDIRECT_URI = prevRedirect;
+        else delete process.env.GOOGLE_REDIRECT_URI;
+      }
+    });
+
+    test('Disambiguation: GET /api/auth/google/callback redirects with HTTP 301 to /api/accounts/google/callback', async () => {
+      const { req, res } = createMockHttp({
+        method: 'GET',
+        url: '/api/auth/google/callback?code=mock_code_123&state=mock_state_456',
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalRedirect = res.redirect.bind(res);
+        res.redirect = (statusOrUrl: any, optUrl?: any) => {
+          originalRedirect(statusOrUrl, optUrl);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      assert.equal(res.statusCode, 301);
+      assert.equal(
+        res.headers['location'],
+        '/api/accounts/google/callback?code=mock_code_123&state=mock_state_456'
+      );
+    });
+
+    test('Login handles trimmed and case-insensitive email queries reliably', async () => {
+      const { req, res } = createMockHttp({
+        method: 'POST',
+        url: '/api/auth/login',
+        body: {
+          email: '   SOCIALDOODLE7@GMAIL.COM   ',
+          password: 'Password123!',
+        },
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalJson = res.json.bind(res);
+        res.json = (data: any) => {
+          originalJson(data);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.success, true);
+      assert.equal(res.body.data.user.email, 'socialdoodle7@gmail.com');
+    });
+
+    test('getClearCookieOptions omits maxAge to conform to standard cookie removal', () => {
+      const clearOptions = getClearCookieOptions();
+      assert.equal(clearOptions.httpOnly, true);
+      assert.equal(clearOptions.path, '/');
+      assert.equal(clearOptions.sameSite, 'lax');
+      assert.equal('maxAge' in clearOptions, false, 'getClearCookieOptions must not include maxAge');
     });
   });
 });

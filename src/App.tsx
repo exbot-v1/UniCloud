@@ -23,7 +23,7 @@ import {
   DEMO_VIRTUAL_FOLDERS,
 } from './data/mockData';
 import { calculateStoragePoolMetrics } from './lib/storageMetrics';
-import { authFetch, clearSessionToken, setSessionToken } from './lib/api';
+import { authFetch, clearSessionToken } from './lib/api';
 import { StorageAccount, StoragePoolSummary } from './types/account';
 import { UserPublicProfile } from './types/auth';
 
@@ -90,6 +90,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    clearSessionToken();
     checkSession();
   }, [checkSession]);
 
@@ -126,10 +127,7 @@ export default function App() {
     }
   };
 
-  const handleAuthSuccess = (authenticatedUser: UserPublicProfile, token?: string) => {
-    if (token) {
-      setSessionToken(token);
-    }
+  const handleAuthSuccess = (authenticatedUser: UserPublicProfile) => {
     setUser(authenticatedUser);
     loadUserData();
   };

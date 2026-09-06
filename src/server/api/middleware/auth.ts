@@ -27,8 +27,10 @@ declare global {
  * Cookie configuration helper
  */
 export function getSessionCookieOptions(req?: Request) {
-  // If running on HTTPS (or Cloud Run / forwarded proxy), enable secure and sameSite: 'none' for iframes
+  // If running on HTTPS, production, Vercel, or forwarded proxy, enable secure
   const isSecure = process.env.NODE_ENV === 'production' ||
+                   process.env.VERCEL_ENV === 'production' ||
+                   Boolean(process.env.VERCEL) ||
                    Boolean(process.env.APP_URL?.startsWith('https')) ||
                    Boolean(req?.secure) ||
                    req?.get('x-forwarded-proto') === 'https';
@@ -36,8 +38,29 @@ export function getSessionCookieOptions(req?: Request) {
   return {
     httpOnly: true,
     secure: isSecure,
-    sameSite: (isSecure ? 'none' : 'lax') as 'none' | 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    sameSite: 'lax' as const,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days persistent session
+    path: '/',
+  };
+}
+
+/**
+ * Clear cookie configuration helper
+ * Uses matching cookie identity attributes (httpOnly, secure, sameSite, path)
+ * without maxAge to eliminate Express clearCookie deprecation warning.
+ */
+export function getClearCookieOptions(req?: Request) {
+  const isSecure = process.env.NODE_ENV === 'production' ||
+                   process.env.VERCEL_ENV === 'production' ||
+                   Boolean(process.env.VERCEL) ||
+                   Boolean(process.env.APP_URL?.startsWith('https')) ||
+                   Boolean(req?.secure) ||
+                   req?.get('x-forwarded-proto') === 'https';
+
+  return {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: 'lax' as const,
     path: '/',
   };
 }
@@ -83,8 +106,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
     const user = await UserService.validateSession(token);
     if (!user) {
-      // Clear invalid cookie
-      res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions(req));
+      // Clear invalid cookie without deprecated maxAge
+      res.clearCookie(SESSION_COOKIE_NAME, getClearCookieOptions(req));
       sendApiError(
         res,
         new AppError(

@@ -5,18 +5,18 @@
  * UniCloud User Authentication Modal (Phase 1)
  * 
  * Provides secure Login and Registration interfaces connected directly
- * to the backend Express authentication API with HTTP-only cookies.
+ * to the backend Express authentication API with persistent HTTP-only cookies.
+ * Does not expose or store raw session tokens in client-side storage.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { X, Lock, Mail, User, ArrowRight, ShieldCheck, AlertCircle, Loader2 } from 'lucide-react';
 import { UserPublicProfile } from '../types/auth';
-import { setSessionToken } from '../lib/api';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAuthSuccess: (user: UserPublicProfile, token?: string) => void;
+  onAuthSuccess: (user: UserPublicProfile) => void;
   initialMode?: 'login' | 'register';
 }
 
@@ -32,18 +32,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isSubmittingRef = useRef(false);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading || isSubmittingRef.current) return;
+
+    isSubmittingRef.current = true;
     setError(null);
     setLoading(true);
 
+    const cleanEmail = email.trim().toLowerCase();
     const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
     const payload = mode === 'register' 
-      ? { email, password, displayName: displayName || email.split('@')[0] }
-      : { email, password };
+      ? { email: cleanEmail, password, displayName: displayName.trim() || cleanEmail.split('@')[0] }
+      : { email: cleanEmail, password };
 
     try {
       const res = await fetch(endpoint, {
@@ -59,20 +64,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         throw new Error(data.error?.message || 'Authentication failed. Please check your credentials.');
       }
 
-      if (data.data?.sessionToken) {
-        setSessionToken(data.data.sessionToken);
-      }
-
-      onAuthSuccess(data.data.user, data.data.sessionToken);
+      onAuthSuccess(data.data.user);
       onClose();
     } catch (err: any) {
       setError(err.message || 'An error occurred during authentication.');
     } finally {
       setLoading(false);
+      isSubmittingRef.current = false;
     }
   };
 
   const handleQuickDemoLogin = async () => {
+    if (loading || isSubmittingRef.current) return;
+
+    isSubmittingRef.current = true;
     setError(null);
     setLoading(true);
 
@@ -109,16 +114,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         throw new Error(data.error?.message || 'Demo authentication failed.');
       }
 
-      if (data.data?.sessionToken) {
-        setSessionToken(data.data.sessionToken);
-      }
-
-      onAuthSuccess(data.data.user, data.data.sessionToken);
+      onAuthSuccess(data.data.user);
       onClose();
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || 'An error occurred during demo login.');
     } finally {
       setLoading(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -127,14 +129,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       {/* Backdrop */}
       <div 
         className="fixed inset-0 bg-black/80 backdrop-blur-xs transition-opacity" 
-        onClick={onClose} 
+        onClick={loading ? undefined : onClose} 
       />
 
       {/* Modal Card */}
       <div className="relative w-full max-w-md rounded-2xl border border-[#262c36] bg-[#12161f] p-6 shadow-2xl z-10 text-slate-100">
         <button
           onClick={onClose}
-          className="absolute right-4 top-4 p-2 text-slate-400 hover:text-slate-200 hover:bg-[#1a202c] rounded-xl transition-colors"
+          disabled={loading}
+          className="absolute right-4 top-4 p-2 text-slate-400 hover:text-slate-200 hover:bg-[#1a202c] disabled:opacity-40 rounded-xl transition-colors"
         >
           <X className="h-4 w-4" />
         </button>
@@ -171,10 +174,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <User className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
                 <input
                   type="text"
+                  disabled={loading}
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="e.g. Alex Miller"
-                  className="w-full pl-10 pr-3 py-2 text-sm bg-[#0e1117] text-white border border-[#262c36] focus:border-cyan-500 rounded-xl focus:outline-hidden"
+                  className="w-full pl-10 pr-3 py-2 text-sm bg-[#0e1117] text-white border border-[#262c36] focus:border-cyan-500 rounded-xl focus:outline-hidden disabled:opacity-50"
                 />
               </div>
             </div>
@@ -187,10 +191,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <input
                 type="email"
                 required
+                disabled={loading}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@example.com"
-                className="w-full pl-10 pr-3 py-2 text-sm bg-[#0e1117] text-white border border-[#262c36] focus:border-cyan-500 rounded-xl focus:outline-hidden"
+                className="w-full pl-10 pr-3 py-2 text-sm bg-[#0e1117] text-white border border-[#262c36] focus:border-cyan-500 rounded-xl focus:outline-hidden disabled:opacity-50"
               />
             </div>
           </div>
@@ -203,10 +208,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 type="password"
                 required
                 minLength={8}
+                disabled={loading}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Minimum 8 characters"
-                className="w-full pl-10 pr-3 py-2 text-sm bg-[#0e1117] text-white border border-[#262c36] focus:border-cyan-500 rounded-xl focus:outline-hidden"
+                className="w-full pl-10 pr-3 py-2 text-sm bg-[#0e1117] text-white border border-[#262c36] focus:border-cyan-500 rounded-xl focus:outline-hidden disabled:opacity-50"
               />
             </div>
           </div>
@@ -214,7 +220,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2.5 px-4 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-bold text-sm rounded-xl shadow-md shadow-cyan-950/50 flex items-center justify-center gap-2 transition-all"
+            className="w-full py-2.5 px-4 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-bold text-sm rounded-xl shadow-md shadow-cyan-950/50 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:cursor-not-allowed"
           >
             {loading ? (
               <Loader2 className="h-4 w-4 animate-spin text-slate-950" />
@@ -233,7 +239,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             type="button"
             onClick={handleQuickDemoLogin}
             disabled={loading}
-            className="w-full py-2 px-3 bg-[#161b24] hover:bg-[#1a202c] border border-[#262c36] text-xs font-semibold text-slate-300 rounded-xl flex items-center justify-center gap-2 transition-colors"
+            className="w-full py-2 px-3 bg-[#161b24] hover:bg-[#1a202c] disabled:opacity-50 border border-[#262c36] text-xs font-semibold text-slate-300 rounded-xl flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:cursor-not-allowed"
           >
             <ShieldCheck className="h-3.5 w-3.5 text-cyan-400" />
             <span>Sign in as Test User (socialdoodle7)</span>
@@ -245,11 +251,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <p>
                 Don&apos;t have an account?{' '}
                 <button
+                  disabled={loading}
                   onClick={() => {
                     setMode('register');
                     setError(null);
                   }}
-                  className="text-cyan-400 hover:underline font-semibold"
+                  className="text-cyan-400 hover:underline font-semibold disabled:opacity-50"
                 >
                   Register here
                 </button>
@@ -258,11 +265,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <p>
                 Already have an account?{' '}
                 <button
+                  disabled={loading}
                   onClick={() => {
                     setMode('login');
                     setError(null);
                   }}
-                  className="text-cyan-400 hover:underline font-semibold"
+                  className="text-cyan-400 hover:underline font-semibold disabled:opacity-50"
                 >
                   Sign in
                 </button>

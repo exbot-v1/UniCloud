@@ -470,10 +470,10 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     return { rows: [newUser as any], rowCount: 1 };
   }
 
-  if (/SELECT .* FROM users WHERE email =/i.test(normalizedSql)) {
-    const email = params[0]?.toLowerCase();
+  if (/SELECT .* FROM users WHERE (LOWER\(TRIM\(email\)\)|email) =/i.test(normalizedSql)) {
+    const email = params[0]?.toLowerCase().trim();
     for (const u of memoryDb.users.values()) {
-      if (u.email === email) {
+      if (u.email?.toLowerCase().trim() === email) {
         return { rows: [u as any], rowCount: 1 };
       }
     }

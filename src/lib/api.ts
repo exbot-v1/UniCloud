@@ -4,48 +4,36 @@
  * 
  * UniCloud Client API Utility
  * 
- * Provides an authenticated fetch wrapper that handles dual-channel authentication
- * (HTTP-only cookies and Bearer token in Authorization header) to ensure seamless
- * authentication across standard browsers, cross-site iframes, and partitioned contexts.
+ * Provides an authenticated fetch wrapper using standard HTTP-only session cookies
+ * with automatic credentials inclusion. Raw session tokens are never stored in
+ * localStorage or exposed to browser JavaScript.
  */
 
-const TOKEN_STORAGE_KEY = 'unicloud_session_token';
+const LEGACY_STORAGE_KEYS = ['unicloud_session_token', 'sessionToken'];
 
-export function getSessionToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function setSessionToken(token: string): void {
-  try {
-    localStorage.setItem(TOKEN_STORAGE_KEY, token);
-  } catch {
-    // Ignore localStorage write failure in restricted environments
-  }
-}
-
+/**
+ * Purge any legacy session tokens from browser web storage (localStorage & sessionStorage)
+ * to ensure tokens never reside in client-side storage.
+ */
 export function clearSessionToken(): void {
   try {
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    for (const key of LEGACY_STORAGE_KEYS) {
+      localStorage.removeItem(key);
+      sessionStorage.removeItem(key);
+    }
   } catch {
-    // Ignore localStorage write failure in restricted environments
+    // Ignore storage access restrictions in sandboxed iframes
   }
 }
 
+/**
+ * Authenticated fetch wrapper for UniCloud client.
+ * Uses HTTP-only cookie authentication via credentials: 'include'.
+ * Does not expose or transmit raw session tokens via Bearer headers in normal browser operations.
+ */
 export async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const token = getSessionToken();
-  const headers = new Headers(init?.headers);
-
-  if (token && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
-
   return fetch(input, {
     ...init,
-    headers,
     credentials: 'include',
   });
 }

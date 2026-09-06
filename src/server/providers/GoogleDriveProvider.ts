@@ -108,8 +108,23 @@ export class GoogleDriveProvider implements StorageProvider {
       );
     }
 
-    const defaultRedirect = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/accounts/google/callback';
-    return new google.auth.OAuth2(clientId, clientSecret, redirectUri || defaultRedirect);
+    const configured = process.env.GOOGLE_REDIRECT_URI?.trim();
+    let defaultRedirect = 'http://localhost:3000/api/accounts/google/callback';
+    if (configured) {
+      if (configured.endsWith('/api/auth/google/callback')) {
+        defaultRedirect = configured.replace(/\/api\/auth\/google\/callback$/, '/api/accounts/google/callback');
+      } else {
+        defaultRedirect = configured;
+      }
+    } else if (process.env.APP_URL) {
+      defaultRedirect = `${process.env.APP_URL.replace(/\/+$/, '')}/api/accounts/google/callback`;
+    }
+
+    const effectiveRedirect = (redirectUri && redirectUri.endsWith('/api/auth/google/callback'))
+      ? redirectUri.replace(/\/api\/auth\/google\/callback$/, '/api/accounts/google/callback')
+      : (redirectUri || defaultRedirect);
+
+    return new google.auth.OAuth2(clientId, clientSecret, effectiveRedirect);
   }
 
   /**

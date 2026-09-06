@@ -13,7 +13,7 @@ import { sendApiError, AppError } from '../utils/errors.js';
 import { ApiResponse, ErrorCode } from '../../types/api.js';
 import { checkDatabaseHealth, query } from '../../db/client.js';
 import { UserService } from '../services/UserService.js';
-import { requireAuth, optionalAuth, SESSION_COOKIE_NAME, getSessionCookieOptions, extractSessionToken } from './middleware/auth.js';
+import { requireAuth, optionalAuth, SESSION_COOKIE_NAME, getSessionCookieOptions, getClearCookieOptions, extractSessionToken } from './middleware/auth.js';
 import { accountService } from '../services/AccountService.js';
 import { fileService } from '../services/FileService.js';
 import { storageService } from '../services/StorageService.js';
@@ -156,13 +156,11 @@ apiRouter.post('/auth/register', async (req: Request, res: Response) => {
 
     const response: ApiResponse<{
       user: typeof session.user;
-      sessionToken: string;
       expiresAt: string;
     }> = {
       success: true,
       data: {
         user: session.user,
-        sessionToken: session.sessionToken,
         expiresAt: session.expiresAt.toISOString(),
       },
       meta: {
@@ -196,13 +194,11 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
 
     const response: ApiResponse<{
       user: typeof session.user;
-      sessionToken: string;
       expiresAt: string;
     }> = {
       success: true,
       data: {
         user: session.user,
-        sessionToken: session.sessionToken,
         expiresAt: session.expiresAt.toISOString(),
       },
       meta: {
@@ -228,7 +224,7 @@ apiRouter.post('/auth/logout', async (req: Request, res: Response) => {
       await UserService.invalidateSession(token);
     }
 
-    res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions(req));
+    res.clearCookie(SESSION_COOKIE_NAME, getClearCookieOptions(req));
 
     const response: ApiResponse<{ message: string }> = {
       success: true,
@@ -265,20 +261,45 @@ apiRouter.get('/auth/me', optionalAuth, (req: Request, res: Response) => {
 // =============================================================================
 
 /**
- * Resolves the appropriate Google OAuth callback URL.
- * Prioritizes GOOGLE_REDIRECT_URI, APP_URL, and dynamic request host with proto.
+ * Resolves the canonical Google OAuth callback URL.
+ * Uses GOOGLE_REDIRECT_URI as the production source of truth.
+ * Guarantees /api/accounts/google/callback is the single canonical callback path.
  */
-function getGoogleRedirectUri(req: Request): string {
-  if (process.env.GOOGLE_REDIRECT_URI) {
-    return process.env.GOOGLE_REDIRECT_URI;
+export function getGoogleRedirectUri(req?: Request): string {
+  const configured = process.env.GOOGLE_REDIRECT_URI?.trim();
+  if (configured) {
+    // If GOOGLE_REDIRECT_URI points to the legacy or ambiguous /api/auth/google/callback path,
+    // normalize to the canonical /api/accounts/google/callback path.
+    if (configured.endsWith('/api/auth/google/callback')) {
+      return configured.replace(/\/api\/auth\/google\/callback$/, '/api/accounts/google/callback');
+    }
+    // If configured as an origin URL (e.g. https://unicloud1.vercel.app or https://unicloud1.vercel.app/)
+    if (configured.startsWith('http://') || configured.startsWith('https://')) {
+      try {
+        const parsed = new URL(configured);
+        if (parsed.pathname === '/' || parsed.pathname === '' || parsed.pathname === '/api/auth/google/callback') {
+          parsed.pathname = '/api/accounts/google/callback';
+          return parsed.toString();
+        }
+      } catch {
+        // use as-is
+      }
+    }
+    return configured;
   }
-  const appUrl = process.env.APP_URL;
+
+  const appUrl = process.env.APP_URL?.trim();
   if (appUrl) {
     return `${appUrl.replace(/\/+$/, '')}/api/accounts/google/callback`;
   }
-  const host = req.get('host') || 'localhost:3000';
-  const protocol = req.secure || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
-  return `${protocol}://${host}/api/accounts/google/callback`;
+
+  if (req) {
+    const host = req.get('host') || 'localhost:3000';
+    const protocol = req.secure || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+    return `${protocol}://${host}/api/accounts/google/callback`;
+  }
+
+  return 'http://localhost:3000/api/accounts/google/callback';
 }
 
 /**
@@ -540,8 +561,14 @@ const handleGoogleOAuthCallback = async (req: Request, res: Response) => {
   }
 };
 
+// Canonical Google OAuth callback endpoint
 apiRouter.get('/accounts/google/callback', handleGoogleOAuthCallback);
-apiRouter.get('/auth/google/callback', handleGoogleOAuthCallback);
+
+// Disambiguation: permanently redirect legacy /api/auth/google/callback to canonical /api/accounts/google/callback
+apiRouter.get('/auth/google/callback', (req: Request, res: Response) => {
+  const query = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+  res.redirect(301, `/api/accounts/google/callback${query}`);
+});
 
 /**
  * POST /api/accounts/:id/sync

@@ -24,7 +24,6 @@ import {
 } from 'lucide-react';
 import { UserPublicProfile } from '../types/auth';
 import { StorageAccount } from '../types/account';
-import { getSessionToken } from '../lib/api';
 
 interface AddAccountModalProps {
   isOpen: boolean;
@@ -133,10 +132,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
     setConnecting(true);
     setErrorMessage(null);
 
-    const token = getSessionToken();
-    const connectUrl = token
-      ? `/api/accounts/google/connect?token=${encodeURIComponent(token)}`
-      : '/api/accounts/google/connect';
+    const connectUrl = '/api/accounts/google/connect';
 
     const width = 600;
     const height = 700;

@@ -62,7 +62,7 @@ export class UserService {
     }
 
     // Check if user already exists
-    const existing = await query<DbUser>('SELECT id FROM users WHERE email = $1', [email]);
+    const existing = await query<DbUser>('SELECT id FROM users WHERE LOWER(TRIM(email)) = $1', [email]);
     if (existing.rowCount > 0) {
       throw new AppError(
         ErrorCode.RESOURCE_ALREADY_EXISTS,
@@ -103,7 +103,7 @@ export class UserService {
     }
 
     const result = await query<DbUser>(
-      'SELECT * FROM users WHERE email = $1',
+      'SELECT * FROM users WHERE LOWER(TRIM(email)) = $1',
       [email]
     );
 
@@ -140,7 +140,7 @@ export class UserService {
    */
   public static async getUserByEmail(email: string): Promise<UserPublicProfile | null> {
     const result = await query<DbUser>(
-      'SELECT * FROM users WHERE email = $1',
+      'SELECT * FROM users WHERE LOWER(TRIM(email)) = $1',
       [email.trim().toLowerCase()]
     );
     if (result.rowCount === 0) return null;
