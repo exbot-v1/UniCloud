@@ -383,6 +383,7 @@ export class AccountService {
     // Clean up local virtual file mappings (preserves Google Drive files intact)
     await query('DELETE FROM virtual_files WHERE storage_account_id = $1', [accountId]);
     await query('DELETE FROM virtual_folders WHERE storage_account_id = $1', [accountId]);
+    await query('DELETE FROM upload_jobs WHERE storage_account_id = $1', [accountId]);
 
     // Delete account
     const deleteResult = await query(
@@ -400,6 +401,26 @@ export class AccountService {
     }
 
     logger.info(`Successfully disconnected account ${accountId} for user ${userId}`);
+  }
+
+  /**
+   * Toggles an account's enabled state (Phase 5 Storage Lifecycle).
+   * Disabled accounts are excluded from upload routing, cannot receive uploads or cross-account moves.
+   */
+  async toggleAccountEnabled(userId: string, accountId: string, isEnabled?: boolean): Promise<StorageAccount> {
+    const current = await this.getAccountById(userId, accountId);
+    const newEnabled = typeof isEnabled === 'boolean' ? isEnabled : !current.isEnabled;
+    const now = new Date().toISOString();
+
+    await query(
+      `UPDATE storage_accounts SET
+        is_enabled = $1,
+        updated_at = $2
+       WHERE id = $3 AND user_id = $4`,
+      [newEnabled, now, accountId, userId]
+    );
+
+    return this.getAccountById(userId, accountId);
   }
 
   /**

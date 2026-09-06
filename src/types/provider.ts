@@ -163,6 +163,11 @@ export interface StorageProvider {
   deleteFile(accessToken: string, providerFileId: string, permanent?: boolean): Promise<void>;
 
   /**
+   * Restores a trashed file on the provider (Phase 5)
+   */
+  restoreFile?(accessToken: string, providerFileId: string): Promise<ProviderFileMetadata>;
+
+  /**
    * Renames a file or folder on the provider
    */
   renameFile(accessToken: string, providerFileId: string, newName: string): Promise<ProviderFileMetadata>;
@@ -171,6 +176,24 @@ export interface StorageProvider {
    * Moves a file to a new parent folder on the provider
    */
   moveFile(accessToken: string, providerFileId: string, targetParentFolderId: string): Promise<ProviderFileMetadata>;
+
+  /**
+   * Copies a file on the provider (Phase 5)
+   */
+  copyFile?(accessToken: string, providerFileId: string, newName?: string, targetFolderId?: string): Promise<ProviderFileMetadata>;
+
+  /**
+   * Downloads raw file content as a buffer for cross-account transfer (Phase 5)
+   */
+  downloadFileContent?(accessToken: string, providerFileId: string): Promise<Buffer>;
+
+  /**
+   * Simple upload of file content buffer (Phase 5)
+   */
+  uploadSimpleFile?(
+    accessToken: string,
+    metadata: { name: string; mimeType: string; content: Buffer; parentFolderId?: string }
+  ): Promise<ProviderFileMetadata>;
 
   /**
    * Obtains a secure read/download stream or URL

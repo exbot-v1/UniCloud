@@ -548,10 +548,18 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     const acc = memoryDb.storageAccounts.get(id);
     if (acc) {
       acc.updated_at = new Date().toISOString();
+      if (/is_enabled\s*=/i.test(normalizedSql)) {
+        acc.is_enabled = Boolean(params[0]);
+      }
       if (/used_bytes\s*=\s*used_bytes\s*\+/i.test(normalizedSql)) {
         const delta = Number(params[0]) || 0;
         acc.used_bytes = Number(acc.used_bytes || 0) + delta;
         acc.free_bytes = Math.max(0, Number(acc.free_bytes || 0) - delta);
+      }
+      if (/used_bytes\s*=\s*(GREATEST\s*\(\s*0\s*,\s*)?used_bytes\s*-\s*\$/i.test(normalizedSql)) {
+        const delta = Number(params[0]) || 0;
+        acc.used_bytes = Math.max(0, Number(acc.used_bytes || 0) - delta);
+        acc.free_bytes = Number(acc.free_bytes || 0) + delta;
       }
       if (/drive_change_token/i.test(normalizedSql)) {
         acc.drive_change_token = params[0];
@@ -762,8 +770,23 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   if (/SELECT .* FROM virtual_files WHERE id =/i.test(normalizedSql)) {
     const fileId = params[0];
+    const userId = params[1];
     const file = memoryDb.virtualFiles.get(fileId);
-    return { rows: file ? [file as any] : [], rowCount: file ? 1 : 0 };
+    if (file && (!userId || file.user_id === userId)) {
+      return { rows: [file as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+
+  if (/DELETE FROM virtual_files WHERE id =/i.test(normalizedSql)) {
+    const fileId = params[0];
+    const userId = params[1];
+    const file = memoryDb.virtualFiles.get(fileId);
+    if (file && (!userId || file.user_id === userId)) {
+      memoryDb.virtualFiles.delete(fileId);
+      return { rows: [], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
   }
 
   if (/SELECT .* FROM virtual_files WHERE storage_account_id = .* AND provider_file_id =/i.test(normalizedSql)) {
@@ -796,6 +819,19 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   if (/UPDATE virtual_files SET is_trashed = TRUE/i.test(normalizedSql)) {
+    if (/WHERE id =/i.test(normalizedSql)) {
+      const fileId = params[0];
+      const userId = params[1];
+      const f = memoryDb.virtualFiles.get(fileId);
+      if (f && (!userId || f.user_id === userId)) {
+        f.is_trashed = true;
+        f.trashed_at = new Date().toISOString();
+        f.updated_at = new Date().toISOString();
+        return { rows: [f as any], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
     if (/provider_file_id/i.test(normalizedSql)) {
       const accountId = params[0];
       const providerFileId = params[1];
@@ -831,6 +867,35 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       }
     }
     return { rows: [], rowCount: count };
+  }
+
+  if (/UPDATE virtual_files/i.test(normalizedSql)) {
+    // Handle rename, star, restore, move, etc.
+    const fileId = params[params.length - 2];
+    const userId = params[params.length - 1];
+    const f = memoryDb.virtualFiles.get(fileId);
+    if (f && (!userId || f.user_id === userId)) {
+      f.updated_at = new Date().toISOString();
+      if (/name\s*=\s*\$1/i.test(normalizedSql)) {
+        f.name = params[0];
+      }
+      if (/is_starred\s*=\s*\$1/i.test(normalizedSql)) {
+        f.is_starred = Boolean(params[0]);
+      }
+      if (/is_trashed\s*=\s*false/i.test(normalizedSql)) {
+        f.is_trashed = false;
+        f.trashed_at = null;
+      }
+      if (/storage_account_id\s*=\s*\$1/i.test(normalizedSql)) {
+        f.storage_account_id = params[0];
+        f.provider_file_id = params[1];
+        f.parent_id = params[2] || null;
+      } else if (/parent_id\s*=\s*\$1/i.test(normalizedSql)) {
+        f.parent_id = params[0] || null;
+      }
+      return { rows: [f as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
   }
 
   if (/INSERT INTO virtual_files/i.test(normalizedSql)) {
@@ -908,8 +973,23 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   // 6. Virtual Folders Queries
   if (/SELECT .* FROM virtual_folders WHERE id =/i.test(normalizedSql)) {
     const folderId = params[0];
+    const userId = params[1];
     const folder = memoryDb.virtualFolders.get(folderId);
-    return { rows: folder ? [folder as any] : [], rowCount: folder ? 1 : 0 };
+    if (folder && (!userId || folder.user_id === userId)) {
+      return { rows: [folder as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+
+  if (/DELETE FROM virtual_folders WHERE id =/i.test(normalizedSql)) {
+    const folderId = params[0];
+    const userId = params[1];
+    const folder = memoryDb.virtualFolders.get(folderId);
+    if (folder && (!userId || folder.user_id === userId)) {
+      memoryDb.virtualFolders.delete(folderId);
+      return { rows: [], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
   }
 
   if (/SELECT .* FROM virtual_folders WHERE storage_account_id = .* AND provider_folder_id =/i.test(normalizedSql)) {
@@ -936,6 +1016,19 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   if (/UPDATE virtual_folders SET is_trashed = TRUE/i.test(normalizedSql)) {
+    if (/WHERE id =/i.test(normalizedSql)) {
+      const folderId = params[0];
+      const userId = params[1];
+      const f = memoryDb.virtualFolders.get(folderId);
+      if (f && (!userId || f.user_id === userId)) {
+        f.is_trashed = true;
+        f.trashed_at = new Date().toISOString();
+        f.updated_at = new Date().toISOString();
+        return { rows: [f as any], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
     const accountId = params[0];
     const providerFolderId = params[1];
     const userId = params[2];
@@ -949,6 +1042,19 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       }
     }
     return { rows: [], rowCount: updated };
+  }
+
+  if (/UPDATE virtual_folders SET is_trashed = FALSE/i.test(normalizedSql)) {
+    const folderId = params[0];
+    const userId = params[1];
+    const f = memoryDb.virtualFolders.get(folderId);
+    if (f && (!userId || f.user_id === userId)) {
+      f.is_trashed = false;
+      f.trashed_at = null;
+      f.updated_at = new Date().toISOString();
+      return { rows: [f as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
   }
 
   if (/UPDATE virtual_folders SET parent_id =/i.test(normalizedSql)) {
@@ -966,15 +1072,22 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   if (/UPDATE virtual_folders SET name =/i.test(normalizedSql)) {
     const name = params[0];
-    const is_starred = Boolean(params[1]);
-    const is_trashed = Boolean(params[2]);
-    const id = params[3];
-    const user_id = params[4];
+    let id: string;
+    let user_id: string;
+    if (params.length === 3) {
+      id = params[1];
+      user_id = params[2];
+    } else {
+      id = params[3];
+      user_id = params[4];
+    }
     const folder = memoryDb.virtualFolders.get(id);
-    if (folder && folder.user_id === user_id) {
+    if (folder && (!user_id || folder.user_id === user_id)) {
       folder.name = name;
-      folder.is_starred = is_starred;
-      folder.is_trashed = is_trashed;
+      if (params.length > 3) {
+        folder.is_starred = Boolean(params[1]);
+        folder.is_trashed = Boolean(params[2]);
+      }
       folder.updated_at = new Date().toISOString();
       return { rows: [folder as any], rowCount: 1 };
     }
@@ -1116,6 +1229,18 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       list.sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''));
     }
     return { rows: list as any[], rowCount: list.length };
+  }
+
+  if (/DELETE FROM upload_jobs WHERE storage_account_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    let count = 0;
+    for (const [id, j] of memoryDb.uploadJobs.entries()) {
+      if (j.storage_account_id === accountId) {
+        memoryDb.uploadJobs.delete(id);
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
   }
 
   if (/UPDATE upload_jobs SET/i.test(normalizedSql)) {

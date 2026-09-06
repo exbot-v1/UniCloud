@@ -108,3 +108,34 @@ export interface FileFilterOptions {
   storageAccountId?: string;
   searchQuery?: string;
 }
+
+export interface SearchOptions {
+  query?: string;
+  folderId?: string | null;
+  storageAccountId?: string;
+  mimeType?: string;
+  isStarred?: boolean;
+  isTrashed?: boolean;
+  sortBy?: 'name' | 'size' | 'modifiedAt' | 'createdAt';
+  sortOrder?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+  page?: number;
+  includeFolders?: boolean;
+}
+
+export interface SearchResultItem extends VirtualFile {
+  accountEmail: string;
+  accountDisplayName?: string;
+  accountAvatarUrl?: string;
+}
+
+export interface SearchResult {
+  items: SearchResultItem[];
+  total: number;
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasMore: boolean;
+}

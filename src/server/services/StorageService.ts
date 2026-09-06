@@ -39,6 +39,7 @@ export class StorageService {
         freeBytes: free,
         usagePercentage,
       },
+      isEnabled: row.is_enabled !== false,
       lastSyncedAt: row.last_synced_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -75,7 +76,7 @@ export class StorageService {
     let activeCount = 0;
 
     for (const acc of accounts) {
-      if (acc.status === AccountStatus.ACTIVE) {
+      if (acc.status === AccountStatus.ACTIVE && acc.isEnabled !== false) {
         activeCount++;
       }
       totalCapacity += acc.quota.totalBytes;

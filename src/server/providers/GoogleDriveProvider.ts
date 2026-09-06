@@ -12,6 +12,7 @@
  */
 
 import { google, drive_v3 } from 'googleapis';
+import { Readable } from 'stream';
 import { ProviderType, StorageQuota } from '../../types/account.js';
 import {
   StorageProvider,
@@ -917,5 +918,146 @@ export class GoogleDriveProvider implements StorageProvider {
       return metadata.webUrl;
     }
     return `https://drive.google.com/uc?id=${providerFileId}&export=download`;
+  }
+
+  /**
+   * Restores a trashed file in Google Drive (Phase 5).
+   */
+  async restoreFile(accessToken: string, providerFileId: string): Promise<ProviderFileMetadata> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      const res = await drive.files.update({
+        fileId: providerFileId,
+        requestBody: { trashed: false },
+        fields: 'id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, md5Checksum',
+      });
+
+      const f = res.data;
+      return {
+        providerFileId: f.id || providerFileId,
+        name: f.name || 'Untitled',
+        mimeType: f.mimeType || 'application/octet-stream',
+        sizeBytes: f.size ? Number(f.size) : 0,
+        parentFolderId: f.parents && f.parents.length > 0 ? f.parents[0] : null,
+        isFolder: f.mimeType === 'application/vnd.google-apps.folder',
+        isStarred: Boolean(f.starred),
+        isTrashed: false,
+        webUrl: f.webViewLink || undefined,
+        md5Checksum: f.md5Checksum || undefined,
+        createdAt: f.createdTime || new Date().toISOString(),
+        modifiedAt: f.modifiedTime || new Date().toISOString(),
+      };
+    } catch (err: any) {
+      throw new AppError(ErrorCode.PROVIDER_ERROR, `Failed to restore Google Drive file: ${err.message}`, 502);
+    }
+  }
+
+  /**
+   * Copies a file in Google Drive (Phase 5).
+   */
+  async copyFile(accessToken: string, providerFileId: string, newName?: string, targetFolderId?: string): Promise<ProviderFileMetadata> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      const res = await drive.files.copy({
+        fileId: providerFileId,
+        requestBody: {
+          name: newName,
+          parents: targetFolderId ? [targetFolderId] : undefined,
+        },
+        fields: 'id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, md5Checksum',
+      });
+
+      const f = res.data;
+      return {
+        providerFileId: f.id || '',
+        name: f.name || newName || 'Copy',
+        mimeType: f.mimeType || 'application/octet-stream',
+        sizeBytes: f.size ? Number(f.size) : 0,
+        parentFolderId: targetFolderId || (f.parents && f.parents.length > 0 ? f.parents[0] : null),
+        isFolder: false,
+        isStarred: false,
+        isTrashed: false,
+        webUrl: f.webViewLink || undefined,
+        md5Checksum: f.md5Checksum || undefined,
+        createdAt: f.createdTime || new Date().toISOString(),
+        modifiedAt: f.modifiedTime || new Date().toISOString(),
+      };
+    } catch (err: any) {
+      throw new AppError(ErrorCode.PROVIDER_ERROR, `Failed to copy Google Drive file: ${err.message}`, 502);
+    }
+  }
+
+  /**
+   * Downloads raw file content as a Buffer for cross-account moves/copies (Phase 5).
+   */
+  async downloadFileContent(accessToken: string, providerFileId: string): Promise<Buffer> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      const res = await drive.files.get(
+        { fileId: providerFileId, alt: 'media' },
+        { responseType: 'arraybuffer' }
+      );
+      return Buffer.from(res.data as ArrayBuffer);
+    } catch (err: any) {
+      throw new AppError(ErrorCode.PROVIDER_ERROR, `Failed to download Google Drive file content: ${err.message}`, 502);
+    }
+  }
+
+  /**
+   * Simple upload of file content Buffer (Phase 5).
+   */
+  async uploadSimpleFile(
+    accessToken: string,
+    metadata: { name: string; mimeType: string; content: Buffer; parentFolderId?: string }
+  ): Promise<ProviderFileMetadata> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      const stream = new Readable();
+      stream.push(metadata.content);
+      stream.push(null);
+
+      const res = await drive.files.create({
+        requestBody: {
+          name: metadata.name,
+          mimeType: metadata.mimeType,
+          parents: metadata.parentFolderId ? [metadata.parentFolderId] : undefined,
+        },
+        media: {
+          mimeType: metadata.mimeType,
+          body: stream,
+        },
+        fields: 'id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, md5Checksum',
+      });
+
+      const f = res.data;
+      return {
+        providerFileId: f.id || '',
+        name: f.name || metadata.name,
+        mimeType: f.mimeType || metadata.mimeType,
+        sizeBytes: f.size ? Number(f.size) : metadata.content.length,
+        parentFolderId: f.parents && f.parents.length > 0 ? f.parents[0] : null,
+        isFolder: false,
+        isStarred: false,
+        isTrashed: false,
+        webUrl: f.webViewLink || undefined,
+        md5Checksum: f.md5Checksum || undefined,
+        createdAt: f.createdTime || new Date().toISOString(),
+        modifiedAt: f.modifiedTime || new Date().toISOString(),
+      };
+    } catch (err: any) {
+      throw new AppError(ErrorCode.PROVIDER_ERROR, `Failed to upload file to Google Drive: ${err.message}`, 502);
+    }
   }
 }

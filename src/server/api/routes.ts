@@ -24,6 +24,7 @@ import { OAuthStateService } from '../services/OAuthStateService.js';
 import { syncService } from '../services/SyncService.js';
 import { ProviderRegistry } from '../providers/ProviderRegistry.js';
 import { GoogleDriveProvider } from '../providers/GoogleDriveProvider.js';
+import { searchService } from '../services/SearchService.js';
 import { logger } from '../utils/logger.js';
 
 export const apiRouter = Router();
@@ -750,6 +751,28 @@ apiRouter.delete('/accounts/:id', requireAuth, async (req: Request, res: Respons
 });
 
 /**
+ * PATCH /api/accounts/:id/enable
+ * Storage Lifecycle management: toggles enabled/disabled state of a connected account.
+ */
+apiRouter.patch('/accounts/:id/enable', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const isEnabled = req.body?.isEnabled !== undefined ? Boolean(req.body.isEnabled) : undefined;
+    const account = await accountService.toggleAccountEnabled(req.user!.id, req.params.id, isEnabled);
+    const response: ApiResponse<typeof account> = {
+      success: true,
+      data: account,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
  * GET /api/storage/pool & GET /api/storage
  * Aggregated virtual pool summary computed from PostgreSQL
  */
@@ -857,10 +880,24 @@ apiRouter.patch('/files/:id/star', requireAuth, async (req: Request, res: Respon
 
 /**
  * DELETE /api/files/:id
- * Move virtual file to trash
+ * Move virtual file to trash (or permanent delete if ?permanent=true)
  */
 apiRouter.delete('/files/:id', requireAuth, async (req: Request, res: Response) => {
   try {
+    const permanent = req.query.permanent === 'true';
+    if (permanent) {
+      await fileService.deleteFilePermanent(req.user!.id, req.params.id);
+      const response: ApiResponse<{ message: string }> = {
+        success: true,
+        data: { message: `File ${req.params.id} permanently deleted` },
+        meta: {
+          timestamp: new Date().toISOString(),
+          version: '1.5.0-phase5',
+        },
+      };
+      return res.json(response);
+    }
+
     await fileService.moveToTrash(req.user!.id, req.params.id);
     const response: ApiResponse<{ message: string }> = {
       success: true,
@@ -868,6 +905,264 @@ apiRouter.delete('/files/:id', requireAuth, async (req: Request, res: Response) 
       meta: {
         timestamp: new Date().toISOString(),
         version: '1.1.0-phase1',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * PATCH /api/files/:id/rename
+ * Renames a virtual file and propagates upstream to the owning Drive account.
+ */
+apiRouter.patch('/files/:id/rename', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { name } = req.body;
+    const file = await fileService.renameFile(req.user!.id, req.params.id, name);
+    const response: ApiResponse<typeof file> = {
+      success: true,
+      data: file,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/files/:id/restore
+ * Restores a file from trash.
+ */
+apiRouter.post('/files/:id/restore', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const file = await fileService.restoreFile(req.user!.id, req.params.id);
+    const response: ApiResponse<typeof file> = {
+      success: true,
+      data: file,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * DELETE /api/files/:id/permanent
+ * Permanently deletes a virtual file and purges it from Google Drive.
+ */
+apiRouter.delete('/files/:id/permanent', requireAuth, async (req: Request, res: Response) => {
+  try {
+    await fileService.deleteFilePermanent(req.user!.id, req.params.id);
+    const response: ApiResponse<{ message: string }> = {
+      success: true,
+      data: { message: `File ${req.params.id} permanently deleted` },
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/files/:id/move
+ * Moves a file to another folder or across accounts.
+ */
+apiRouter.post('/files/:id/move', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { targetFolderId, targetAccountId } = req.body;
+    const file = await fileService.moveFile(req.user!.id, req.params.id, {
+      targetFolderId,
+      targetAccountId,
+    });
+    const response: ApiResponse<typeof file> = {
+      success: true,
+      data: file,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/files/:id/copy
+ * Copies a file to another folder or across accounts.
+ */
+apiRouter.post('/files/:id/copy', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { newName, targetFolderId, targetAccountId } = req.body;
+    const file = await fileService.copyFile(req.user!.id, req.params.id, {
+      newName,
+      targetFolderId,
+      targetAccountId,
+    });
+    const response: ApiResponse<typeof file> = {
+      success: true,
+      data: file,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.status(201).json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/folders
+ * Creates a virtual folder backed by storage account / Drive folder.
+ */
+apiRouter.post('/folders', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const folder = await fileService.createFolder(req.user!.id, req.body);
+    const response: ApiResponse<typeof folder> = {
+      success: true,
+      data: folder,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.status(201).json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * PATCH /api/folders/:id/rename
+ * Renames a virtual folder.
+ */
+apiRouter.patch('/folders/:id/rename', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { name } = req.body;
+    const folder = await fileService.renameFolder(req.user!.id, req.params.id, name);
+    const response: ApiResponse<typeof folder> = {
+      success: true,
+      data: folder,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * DELETE /api/folders/:id
+ * Trashes or permanently deletes a virtual folder.
+ */
+apiRouter.delete('/folders/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const permanent = req.query.permanent === 'true';
+    if (permanent) {
+      await fileService.deleteFolderPermanent(req.user!.id, req.params.id);
+      const response: ApiResponse<{ message: string }> = {
+        success: true,
+        data: { message: `Folder ${req.params.id} permanently deleted` },
+        meta: {
+          timestamp: new Date().toISOString(),
+          version: '1.5.0-phase5',
+        },
+      };
+      return res.json(response);
+    }
+
+    const folder = await fileService.trashFolder(req.user!.id, req.params.id);
+    const response: ApiResponse<typeof folder> = {
+      success: true,
+      data: folder,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/folders/:id/restore
+ * Restores a trashed folder.
+ */
+apiRouter.post('/folders/:id/restore', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const folder = await fileService.restoreFolder(req.user!.id, req.params.id);
+    const response: ApiResponse<typeof folder> = {
+      success: true,
+      data: folder,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * GET /api/search
+ * Unified cross-account virtual filesystem search.
+ */
+apiRouter.get('/search', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const queryStr = req.query.q !== undefined ? String(req.query.q) : (req.query.query !== undefined ? String(req.query.query) : undefined);
+    const folderId = req.query.folderId !== undefined ? (req.query.folderId === '' || req.query.folderId === 'root' ? null : String(req.query.folderId)) : undefined;
+    const storageAccountId = req.query.storageAccountId ? String(req.query.storageAccountId) : undefined;
+    const mimeType = req.query.mimeType ? String(req.query.mimeType) : undefined;
+    const isStarred = req.query.isStarred !== undefined ? req.query.isStarred === 'true' : undefined;
+    const isTrashed = req.query.isTrashed !== undefined ? req.query.isTrashed === 'true' : undefined;
+    const sortBy = (req.query.sortBy as any) || undefined;
+    const sortOrder = (req.query.sortOrder as any) || undefined;
+    const page = req.query.page ? Number(req.query.page) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : (req.query.pageSize ? Number(req.query.pageSize) : undefined);
+
+    const searchResult = await searchService.search(req.user!.id, {
+      query: queryStr,
+      folderId,
+      storageAccountId,
+      mimeType,
+      isStarred,
+      isTrashed,
+      sortBy,
+      sortOrder,
+      page,
+      limit,
+    });
+
+    const response: ApiResponse<typeof searchResult> = {
+      success: true,
+      data: searchResult,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
       },
     };
     res.json(response);
