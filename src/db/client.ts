@@ -21,25 +21,114 @@ let pool: pg.Pool | null = null;
 let schemaInitialized = false;
 let schemaPromise: Promise<void> | null = null;
 
+export interface DatabaseUrlValidationResult {
+  valid: boolean;
+  reason?: string;
+}
+
+const PLACEHOLDER_REGEX = /\[YOUR[-_]PASSWORD\]|\[password\]|<password>|your[-_]password|\[your[-_]password\]|\[PASSWORD\]|<YOUR[-_]PASSWORD>|<db[-_]password>|\[db[-_]password\]|PASSWORD_HERE|<PASSWORD_HERE>|\[PASSWORD_HERE\]/i;
+
+/**
+ * Determine if running in strict production mode where in-memory fallbacks are prohibited
+ */
+export function isProductionMode(): boolean {
+  return (
+    process.env.NODE_ENV === 'production' ||
+    process.env.VERCEL_ENV === 'production' ||
+    Boolean(process.env.VERCEL && process.env.VERCEL_ENV !== 'development')
+  );
+}
+
+/**
+ * Reset database pool and schema state for regression testing
+ */
+export function resetDatabaseStateForTesting(): void {
+  pool = null;
+  schemaInitialized = false;
+  schemaPromise = null;
+  delete globalObj.__unicloud_pg_pool;
+  delete globalObj.__unicloud_schema_initialized;
+}
+
+/**
+ * Validates the DATABASE_URL connection string.
+ * Fails closed if missing, empty, malformed, or containing template password placeholders.
+ */
+export function validateDatabaseUrl(...args: [string?]): DatabaseUrlValidationResult {
+  const rawUrl = args.length > 0 ? args[0] : process.env.DATABASE_URL;
+  const url = (typeof rawUrl === 'string' ? rawUrl : '')?.trim();
+  if (!url || url.length === 0) {
+    return { valid: false, reason: 'DATABASE_URL is missing or empty.' };
+  }
+
+  if (PLACEHOLDER_REGEX.test(url)) {
+    return {
+      valid: false,
+      reason: 'DATABASE_URL contains placeholder password text. A real database password is required.',
+    };
+  }
+
+  if (!url.startsWith('postgres://') && !url.startsWith('postgresql://')) {
+    return {
+      valid: false,
+      reason: 'DATABASE_URL is malformed: must begin with postgresql:// or postgres://',
+    };
+  }
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+      return {
+        valid: false,
+        reason: 'DATABASE_URL is malformed: invalid protocol scheme.',
+      };
+    }
+    if (!parsed.hostname || parsed.hostname.trim().length === 0) {
+      return {
+        valid: false,
+        reason: 'DATABASE_URL is malformed: missing database hostname.',
+      };
+    }
+    if (parsed.password && PLACEHOLDER_REGEX.test(parsed.password)) {
+      return {
+        valid: false,
+        reason: 'DATABASE_URL contains placeholder password text. A real database password is required.',
+      };
+    }
+  } catch (_err) {
+    return {
+      valid: false,
+      reason: 'DATABASE_URL is malformed: unable to parse connection URL.',
+    };
+  }
+
+  return { valid: true };
+}
+
 /**
  * Check whether a valid PostgreSQL connection string is configured
  */
 export function hasDatabaseUrl(): boolean {
-  const url = process.env.DATABASE_URL?.trim();
-  if (!url) return false;
-  if (url.includes('[YOUR-PASSWORD]') || url.includes('[password]') || url.includes('<password>') || url.includes('your-password')) {
-    return false;
-  }
-  return true;
+  return validateDatabaseUrl().valid;
 }
 
 /**
  * Initialize or retrieve the PostgreSQL connection pool.
  * In serverless environments (e.g. Vercel), caps connection pool to prevent
  * connection storms across concurrent container instances and caches the pool on globalThis.
+ * In production mode, fails closed with AppError if DATABASE_URL is invalid.
  */
 export function getPool(): pg.Pool | null {
-  if (!hasDatabaseUrl()) {
+  const validation = validateDatabaseUrl();
+
+  if (!validation.valid) {
+    if (isProductionMode()) {
+      throw new AppError(
+        ErrorCode.CONFIGURATION_ERROR,
+        `Production database configuration error: ${validation.reason}`,
+        500
+      );
+    }
     return null;
   }
 
@@ -58,25 +147,37 @@ export function getPool(): pg.Pool | null {
       ? parseInt(process.env.DATABASE_MAX_CONNECTIONS, 10)
       : defaultMax;
 
-    pool = new Pool({
-      connectionString,
-      max: maxConnections,
-      idleTimeoutMillis: isServerless ? 10000 : 30000,
-      connectionTimeoutMillis: isServerless ? 5000 : 8000,
-      ssl: isLocalhost || process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-    });
+    try {
+      pool = new Pool({
+        connectionString,
+        max: maxConnections,
+        idleTimeoutMillis: isServerless ? 10000 : 30000,
+        connectionTimeoutMillis: isServerless ? 5000 : 8000,
+        ssl: isLocalhost || process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+      });
 
-    pool.on('error', (err) => {
-      logger.error('Unexpected idle PostgreSQL client error', { error: err.message });
-    });
+      pool.on('error', (err) => {
+        logger.error('Unexpected idle PostgreSQL client error', { error: err.message });
+      });
 
-    globalObj.__unicloud_pg_pool = pool;
+      globalObj.__unicloud_pg_pool = pool;
 
-    logger.info('PostgreSQL connection pool established', {
-      max: pool.options.max,
-      ssl: Boolean(pool.options.ssl),
-      isServerless,
-    });
+      logger.info('PostgreSQL connection pool established', {
+        max: pool.options.max,
+        ssl: Boolean(pool.options.ssl),
+        isServerless,
+      });
+    } catch (err: any) {
+      logger.error('Failed to initialize PostgreSQL connection pool', { error: err.message });
+      if (isProductionMode()) {
+        throw new AppError(
+          ErrorCode.CONFIGURATION_ERROR,
+          'Production database connection error: failed to initialize connection pool.',
+          500
+        );
+      }
+      return null;
+    }
   }
 
   return pool;
@@ -85,12 +186,20 @@ export function getPool(): pg.Pool | null {
 /**
  * Ensure baseline schema tables exist when connecting to PostgreSQL.
  * Deduplicates concurrent calls and caches initialization status.
+ * Fails closed in production if PostgreSQL is not available.
  */
 export async function ensureSchema(): Promise<void> {
   if (schemaInitialized || globalObj.__unicloud_schema_initialized) return;
 
   const currentPool = getPool();
   if (!currentPool) {
+    if (isProductionMode()) {
+      throw new AppError(
+        ErrorCode.CONFIGURATION_ERROR,
+        'Production requires a valid PostgreSQL database connection; schema initialization cannot proceed with in-memory database.',
+        500
+      );
+    }
     schemaInitialized = true;
     globalObj.__unicloud_schema_initialized = true;
     return;
@@ -303,6 +412,11 @@ export async function query<T = any>(
   text: string,
   params: any[] = []
 ): Promise<{ rows: T[]; rowCount: number }> {
+  // Ensure schema is verified before executing queries on the PostgreSQL pool
+  if (!schemaInitialized && !globalObj.__unicloud_schema_initialized && hasDatabaseUrl()) {
+    await ensureSchema();
+  }
+
   const currentPool = getPool();
 
   if (currentPool) {
@@ -345,6 +459,15 @@ export async function query<T = any>(
     }
   }
 
+  // In production, fallback to in-memory database is strictly prohibited
+  if (isProductionMode()) {
+    throw new AppError(
+      ErrorCode.CONFIGURATION_ERROR,
+      'Production requires a valid PostgreSQL database connection; in-memory database fallback is strictly prohibited in production.',
+      500
+    );
+  }
+
   // In-memory fallback simulation for development without DATABASE_URL
   return executeInMemoryQuery<T>(text, params);
 }
@@ -355,6 +478,11 @@ export async function query<T = any>(
 export async function transaction<T>(
   callback: (client: { query: (text: string, params?: any[]) => Promise<any> }) => Promise<T>
 ): Promise<T> {
+  // Ensure schema is verified before executing transaction queries on the PostgreSQL pool
+  if (!schemaInitialized && !globalObj.__unicloud_schema_initialized && hasDatabaseUrl()) {
+    await ensureSchema();
+  }
+
   const currentPool = getPool();
 
   if (currentPool) {
@@ -372,6 +500,14 @@ export async function transaction<T>(
     }
   }
 
+  if (isProductionMode()) {
+    throw new AppError(
+      ErrorCode.CONFIGURATION_ERROR,
+      'Production requires a valid PostgreSQL database connection; in-memory database fallback is strictly prohibited in production.',
+      500
+    );
+  }
+
   // In-memory atomic execution
   return callback({
     query: (text, params) => query(text, params),
@@ -387,9 +523,27 @@ export async function checkDatabaseHealth(): Promise<{
   mode: 'postgresql' | 'development_memory';
   error?: string;
 }> {
+  if (isProductionMode()) {
+    const validation = validateDatabaseUrl();
+    if (!validation.valid) {
+      return {
+        isConnected: false,
+        mode: 'postgresql',
+        error: validation.reason,
+      };
+    }
+  }
+
   const currentPool = getPool();
 
   if (!currentPool) {
+    if (isProductionMode()) {
+      return {
+        isConnected: false,
+        mode: 'postgresql',
+        error: 'Database connection pool unavailable in production.',
+      };
+    }
     return {
       isConnected: true,
       mode: 'development_memory',
@@ -429,6 +583,13 @@ export async function closePool(): Promise<void> {
 // In-Memory Query Evaluator for local dev when DATABASE_URL is not set
 // ---------------------------------------------------------------------------
 function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCount: number } {
+  if (isProductionMode()) {
+    throw new AppError(
+      ErrorCode.CONFIGURATION_ERROR,
+      'Production database configuration error: In-memory database execution is strictly prohibited in production mode.',
+      500
+    );
+  }
   const normalizedSql = sql.trim().replace(/\s+/g, ' ');
 
   // SELECT 1 (Health check)

@@ -13,11 +13,15 @@ import { createServer as createViteServer } from 'vite';
 import { app } from './src/server/app.js';
 import { logger } from './src/server/utils/logger.js';
 import { validateSecurityConfiguration } from './src/server/utils/config.js';
+import { ensureSchema } from './src/db/client.js';
 import { UserService } from './src/server/services/UserService.js';
 
 export async function startServer() {
   // Validate production security configuration & secrets before accepting traffic
   validateSecurityConfiguration();
+
+  // Ensure PostgreSQL schema verification happens before requests proceed
+  await ensureSchema();
 
   // Initialize demo user only in non-production environments
   if (process.env.NODE_ENV !== 'production' && process.env.VERCEL_ENV !== 'production') {

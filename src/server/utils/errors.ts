@@ -35,7 +35,9 @@ function sanitizeErrorMessage(msg: string): string {
   if (!msg) return msg;
   return msg
     // Mask postgres / database connection URLs with passwords
-    .replace(/(postgres(?:ql)?:\/\/[^:]+:)[^@]+(@)/gi, '$1***$2')
+    .replace(/(postgres(?:ql)?:\/\/[^:\s]+:)[^@\s]+(@)/gi, '$1***$2')
+    // Mask raw connection string parameters
+    .replace(/(DATABASE_URL=)([^&\s]+)/gi, '$1***')
     // Mask bearer tokens
     .replace(/(Bearer\s+)[A-Za-z0-9_\-\.]+/gi, '$1***')
     // Mask client secrets and tokens in key-value format
@@ -45,7 +47,7 @@ function sanitizeErrorMessage(msg: string): string {
 }
 
 export function formatErrorResponse(err: unknown): ApiResponse<never> {
-  const isProd = process.env.NODE_ENV === 'production';
+  const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
 
   if (err instanceof AppError) {
     return {

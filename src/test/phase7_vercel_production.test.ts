@@ -28,7 +28,16 @@ import { isUploadPayloadRoute } from '../server/app.js';
 import { formatErrorResponse, AppError } from '../server/utils/errors.js';
 import { ErrorCode } from '../types/api.js';
 import { validateSecurityConfiguration } from '../server/utils/config.js';
-import { getPool, ensureSchema, query } from '../db/client.js';
+import {
+  getPool,
+  ensureSchema,
+  query,
+  transaction,
+  validateDatabaseUrl,
+  isProductionMode,
+  resetDatabaseStateForTesting,
+  checkDatabaseHealth,
+} from '../db/client.js';
 import { UserService } from '../server/services/UserService.js';
 import { ProviderRegistry } from '../server/providers/ProviderRegistry.js';
 import { ProviderType } from '../types/account.js';
@@ -827,6 +836,332 @@ describe('UniCloud Phase 7: Production & Vercel Deployment Readiness', () => {
       assert.equal(clearOptions.path, '/');
       assert.equal(clearOptions.sameSite, 'lax');
       assert.equal('maxAge' in clearOptions, false, 'getClearCookieOptions must not include maxAge');
+    });
+  });
+
+  describe('9. P7.4 Production Database Fail-Closed Enforcement', () => {
+    test('validateDatabaseUrl detects missing, empty, malformed, and placeholder passwords correctly', () => {
+      // Missing or undefined
+      assert.equal(validateDatabaseUrl(undefined).valid, false);
+      assert.match(validateDatabaseUrl(undefined).reason!, /missing or empty/i);
+
+      // Empty string
+      assert.equal(validateDatabaseUrl('   ').valid, false);
+      assert.match(validateDatabaseUrl('   ').reason!, /missing or empty/i);
+
+      // Placeholder password variants
+      const placeholders = [
+        'postgresql://postgres:[YOUR-PASSWORD]@db.supabase.co:5432/postgres',
+        'postgresql://postgres:[password]@db.supabase.co:5432/postgres',
+        'postgresql://postgres:<password>@db.supabase.co:5432/postgres',
+        'postgresql://postgres:your-password@db.supabase.co:5432/postgres',
+        'postgresql://postgres:[your-password]@db.supabase.co:5432/postgres',
+        'postgresql://postgres:PASSWORD_HERE@db.supabase.co:5432/postgres',
+        'postgresql://postgres:<YOUR-PASSWORD>@db.supabase.co:5432/postgres',
+      ];
+      for (const placeholderUrl of placeholders) {
+        const result = validateDatabaseUrl(placeholderUrl);
+        assert.equal(result.valid, false, `Failed to reject placeholder URL: ${placeholderUrl}`);
+        assert.match(result.reason!, /placeholder/i);
+      }
+
+      // Malformed protocol scheme
+      assert.equal(validateDatabaseUrl('http://localhost:5432').valid, false);
+      assert.match(validateDatabaseUrl('http://localhost:5432').reason!, /malformed/i);
+      assert.equal(validateDatabaseUrl('mysql://root:secret@localhost:3306/db').valid, false);
+
+      // Malformed / unparseable
+      assert.equal(validateDatabaseUrl('not-a-valid-database-url').valid, false);
+      assert.match(validateDatabaseUrl('not-a-valid-database-url').reason!, /malformed/i);
+
+      // Valid connection string
+      const validUrl = 'postgresql://postgres:realSecurePass123!@db.supabase.co:5432/postgres';
+      const validResult = validateDatabaseUrl(validUrl);
+      assert.equal(validResult.valid, true);
+      assert.equal(validResult.reason, undefined);
+    });
+
+    test('validateSecurityConfiguration fails closed with CONFIGURATION_ERROR in NODE_ENV=production when DATABASE_URL is missing', () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevDbUrl = process.env.DATABASE_URL;
+
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.DATABASE_URL;
+
+        assert.throws(
+          () => {
+            validateSecurityConfiguration();
+          },
+          (err: any) => {
+            assert.equal(err instanceof AppError, true);
+            assert.equal(err.errorCode, ErrorCode.CONFIGURATION_ERROR);
+            assert.equal(err.statusCode, 500);
+            assert.match(err.message, /DATABASE_URL is missing or empty/i);
+            return true;
+          }
+        );
+      } finally {
+        process.env.NODE_ENV = prevNodeEnv;
+        if (prevDbUrl !== undefined) {
+          process.env.DATABASE_URL = prevDbUrl;
+        } else {
+          delete process.env.DATABASE_URL;
+        }
+      }
+    });
+
+    test('validateSecurityConfiguration fails closed with CONFIGURATION_ERROR in VERCEL_ENV=production when DATABASE_URL contains placeholder password', () => {
+      const prevVercelEnv = process.env.VERCEL_ENV;
+      const prevDbUrl = process.env.DATABASE_URL;
+
+      try {
+        process.env.VERCEL_ENV = 'production';
+        process.env.DATABASE_URL = 'postgresql://postgres:[YOUR-PASSWORD]@db.supabase.co:5432/postgres';
+
+        assert.throws(
+          () => {
+            validateSecurityConfiguration();
+          },
+          (err: any) => {
+            assert.equal(err instanceof AppError, true);
+            assert.equal(err.errorCode, ErrorCode.CONFIGURATION_ERROR);
+            assert.equal(err.statusCode, 500);
+            assert.match(err.message, /placeholder password/i);
+            // Must not leak passwords or raw connection strings
+            assert.equal(err.message.includes('supabase.co'), false);
+            return true;
+          }
+        );
+      } finally {
+        process.env.VERCEL_ENV = prevVercelEnv;
+        if (prevDbUrl !== undefined) {
+          process.env.DATABASE_URL = prevDbUrl;
+        } else {
+          delete process.env.DATABASE_URL;
+        }
+      }
+    });
+
+    test('getPool fails closed with CONFIGURATION_ERROR in production when DATABASE_URL is missing or invalid', () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevDbUrl = process.env.DATABASE_URL;
+
+      try {
+        process.env.NODE_ENV = 'production';
+        process.env.DATABASE_URL = 'postgresql://postgres:[YOUR-PASSWORD]@db.supabase.co:5432/postgres';
+        resetDatabaseStateForTesting();
+
+        assert.throws(
+          () => {
+            getPool();
+          },
+          (err: any) => {
+            assert.equal(err instanceof AppError, true);
+            assert.equal(err.errorCode, ErrorCode.CONFIGURATION_ERROR);
+            assert.equal(err.statusCode, 500);
+            assert.match(err.message, /placeholder password/i);
+            return true;
+          }
+        );
+      } finally {
+        process.env.NODE_ENV = prevNodeEnv;
+        if (prevDbUrl !== undefined) {
+          process.env.DATABASE_URL = prevDbUrl;
+        } else {
+          delete process.env.DATABASE_URL;
+        }
+        resetDatabaseStateForTesting();
+      }
+    });
+
+    test('query and transaction NEVER fall back to in-memory database in NODE_ENV=production or VERCEL_ENV=production', async () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevDbUrl = process.env.DATABASE_URL;
+
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.DATABASE_URL;
+        resetDatabaseStateForTesting();
+
+        // 1. query() MUST throw CONFIGURATION_ERROR and never execute in-memory
+        await assert.rejects(
+          async () => {
+            await query('SELECT * FROM users');
+          },
+          (err: any) => {
+            assert.equal(err instanceof AppError, true);
+            assert.equal(err.errorCode, ErrorCode.CONFIGURATION_ERROR);
+            assert.match(
+              err.message,
+              /in-memory database fallback is strictly prohibited in production|Production database configuration error/i
+            );
+            return true;
+          }
+        );
+
+        // 2. transaction() MUST throw CONFIGURATION_ERROR and never execute in-memory
+        await assert.rejects(
+          async () => {
+            await transaction(async (client) => {
+              return client.query('SELECT 1');
+            });
+          },
+          (err: any) => {
+            assert.equal(err instanceof AppError, true);
+            assert.equal(err.errorCode, ErrorCode.CONFIGURATION_ERROR);
+            assert.match(
+              err.message,
+              /in-memory database fallback is strictly prohibited in production|Production database configuration error/i
+            );
+            return true;
+          }
+        );
+      } finally {
+        process.env.NODE_ENV = prevNodeEnv;
+        if (prevDbUrl !== undefined) {
+          process.env.DATABASE_URL = prevDbUrl;
+        } else {
+          delete process.env.DATABASE_URL;
+        }
+        resetDatabaseStateForTesting();
+      }
+    });
+
+    test('ensureSchema fails closed with CONFIGURATION_ERROR in production when PostgreSQL is unavailable', async () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevDbUrl = process.env.DATABASE_URL;
+
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.DATABASE_URL;
+        resetDatabaseStateForTesting();
+
+        await assert.rejects(
+          async () => {
+            await ensureSchema();
+          },
+          (err: any) => {
+            assert.equal(err instanceof AppError, true);
+            assert.equal(err.errorCode, ErrorCode.CONFIGURATION_ERROR);
+            assert.equal(err.statusCode, 500);
+            return true;
+          }
+        );
+      } finally {
+        process.env.NODE_ENV = prevNodeEnv;
+        if (prevDbUrl !== undefined) {
+          process.env.DATABASE_URL = prevDbUrl;
+        } else {
+          delete process.env.DATABASE_URL;
+        }
+        resetDatabaseStateForTesting();
+      }
+    });
+
+    test('Serverless handler fails closed safely with HTTP 500 CONFIGURATION_ERROR when DATABASE_URL is invalid in production', async () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevDbUrl = process.env.DATABASE_URL;
+
+      try {
+        process.env.NODE_ENV = 'production';
+        process.env.DATABASE_URL = 'postgresql://postgres:[YOUR-PASSWORD]@db.supabase.co:5432/postgres';
+        resetServerlessInitStateForTesting();
+        resetDatabaseStateForTesting();
+
+        const { req, res } = createMockHttp({
+          method: 'POST',
+          url: '/api/auth/register',
+          body: {
+            email: 'failclosed@test.com',
+            password: 'Password123!',
+          },
+        });
+
+        await new Promise<void>((resolve) => {
+          const originalJson = res.json.bind(res);
+          res.json = (data: any) => {
+            originalJson(data);
+            resolve();
+          };
+          handler(req, res);
+        });
+
+        assert.equal(res.statusCode, 500);
+        assert.equal(res.body.success, false);
+        assert.equal(res.body.error.code, ErrorCode.CONFIGURATION_ERROR);
+        assert.match(res.body.error.message, /placeholder password/i);
+        // Ensure no raw passwords, hostnames, or connection strings are exposed
+        assert.equal(res.body.error.message.includes('supabase.co'), false);
+        assert.equal(res.body.error.message.includes('postgres:'), false);
+      } finally {
+        process.env.NODE_ENV = prevNodeEnv;
+        if (prevDbUrl !== undefined) {
+          process.env.DATABASE_URL = prevDbUrl;
+        } else {
+          delete process.env.DATABASE_URL;
+        }
+        resetServerlessInitStateForTesting();
+        resetDatabaseStateForTesting();
+      }
+    });
+
+    test('Development mode continues to allow in-memory database fallback safely', async () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevDbUrl = process.env.DATABASE_URL;
+
+      try {
+        process.env.NODE_ENV = 'development';
+        delete process.env.DATABASE_URL;
+        resetDatabaseStateForTesting();
+
+        assert.equal(isProductionMode(), false);
+        assert.equal(validateDatabaseUrl().valid, false);
+
+        // Security validation does not throw in dev, but logs warnings
+        const configStatus = validateSecurityConfiguration();
+        assert.equal(configStatus.isProduction, false);
+        assert.equal(configStatus.databaseValid, false);
+        assert.ok(configStatus.warnings && configStatus.warnings.length > 0);
+
+        // Database queries execute normally via in-memory store in development
+        const healthResult = await query('SELECT 1 AS health_check');
+        assert.equal(healthResult.rowCount, 1);
+        assert.equal(healthResult.rows[0].health_check, 1);
+      } finally {
+        process.env.NODE_ENV = prevNodeEnv;
+        if (prevDbUrl !== undefined) {
+          process.env.DATABASE_URL = prevDbUrl;
+        } else {
+          delete process.env.DATABASE_URL;
+        }
+        resetDatabaseStateForTesting();
+      }
+    });
+
+    test('checkDatabaseHealth reports error and does NOT claim development_memory in production', async () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevDbUrl = process.env.DATABASE_URL;
+
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.DATABASE_URL;
+        resetDatabaseStateForTesting();
+
+        const health = await checkDatabaseHealth();
+        assert.equal(health.isConnected, false);
+        assert.equal(health.mode, 'postgresql');
+        assert.ok(health.error);
+        assert.match(health.error, /missing or empty/i);
+      } finally {
+        process.env.NODE_ENV = prevNodeEnv;
+        if (prevDbUrl !== undefined) {
+          process.env.DATABASE_URL = prevDbUrl;
+        } else {
+          delete process.env.DATABASE_URL;
+        }
+        resetDatabaseStateForTesting();
+      }
     });
   });
 });

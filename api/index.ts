@@ -13,6 +13,7 @@ import type { Request, Response } from 'express';
 import { app } from '../src/server/app.js';
 import { UserService } from '../src/server/services/UserService.js';
 import { validateSecurityConfiguration } from '../src/server/utils/config.js';
+import { ensureSchema } from '../src/db/client.js';
 import { sendApiError } from '../src/server/utils/errors.js';
 import { logger } from '../src/server/utils/logger.js';
 
@@ -69,7 +70,10 @@ export async function initializeServerlessInstance(): Promise<void> {
         // 1. Validate security configuration — MUST fail closed if invalid
         validateSecurityConfiguration();
 
-        // 2. Demo user creation strictly disallowed in production
+        // 2. Ensure PostgreSQL database schema is verified before requests proceed
+        await ensureSchema();
+
+        // 3. Demo user creation strictly disallowed in production
         const isProduction =
           process.env.NODE_ENV === 'production' ||
           process.env.VERCEL_ENV === 'production';
