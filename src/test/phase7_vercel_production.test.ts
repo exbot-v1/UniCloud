@@ -30,6 +30,8 @@ import { ErrorCode } from '../types/api.js';
 import { validateSecurityConfiguration } from '../server/utils/config.js';
 import { getPool, ensureSchema, query } from '../db/client.js';
 import { UserService } from '../server/services/UserService.js';
+import { ProviderRegistry } from '../server/providers/ProviderRegistry.js';
+import { ProviderType } from '../types/account.js';
 
 /**
  * Mock Request & Response harness for testing Express applications and serverless handlers
@@ -412,6 +414,116 @@ describe('UniCloud Phase 7: Production & Vercel Deployment Readiness', () => {
       } finally {
         process.env.VERCEL_ENV = prevVercelEnv;
       }
+    });
+  });
+
+  describe('7. P7.2 Serverless ESM Module Resolution & OAuth Config Dynamic Loading', () => {
+    test('GET /api/auth/me loads and executes without ESM module resolution errors', async () => {
+      const { req, res } = createMockHttp({ method: 'GET', url: '/api/auth/me' });
+      await new Promise<void>((resolve) => {
+        const originalJson = res.json.bind(res);
+        res.json = (data: any) => {
+          originalJson(data);
+          resolve();
+        };
+        handler(req, res);
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.success, true);
+    });
+
+    test('GET /api/accounts/google/config loads and executes without ESM module resolution errors', async () => {
+      const { req, res } = createMockHttp({ method: 'GET', url: '/api/accounts/google/config' });
+      await new Promise<void>((resolve) => {
+        const originalJson = res.json.bind(res);
+        res.json = (data: any) => {
+          originalJson(data);
+          resolve();
+        };
+        handler(req, res);
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.success, true);
+      assert.ok(typeof res.body.data.isConfigured === 'boolean');
+      assert.ok(typeof res.body.data.clientIdAvailable === 'boolean');
+      assert.ok(res.body.data.redirectUri);
+      assert.ok(Array.isArray(res.body.data.requiredScopes));
+    });
+
+    test('Google OAuth config is dynamically read from the production environment', async () => {
+      const prevClientId = process.env.GOOGLE_CLIENT_ID;
+      const prevClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+      const prevAppUrl = process.env.APP_URL;
+      const prevRedirectUri = process.env.GOOGLE_REDIRECT_URI;
+
+      try {
+        // 1. Simulate production with configured Google OAuth credentials and explicit redirect URI
+        delete process.env.GOOGLE_REDIRECT_URI;
+        process.env.GOOGLE_CLIENT_ID = 'test-client-id-prod.apps.googleusercontent.com';
+        process.env.GOOGLE_CLIENT_SECRET = 'GOCSPX-prodSecretValue123';
+        process.env.APP_URL = 'https://unicloud.example.com';
+
+        const { req: req1, res: res1 } = createMockHttp({
+          method: 'GET',
+          url: '/api/accounts/google/config',
+        });
+        await new Promise<void>((resolve) => {
+          const originalJson = res1.json.bind(res1);
+          res1.json = (data: any) => {
+            originalJson(data);
+            resolve();
+          };
+          handler(req1, res1);
+        });
+
+        assert.equal(res1.statusCode, 200);
+        assert.equal(res1.body.data.isConfigured, true);
+        assert.equal(res1.body.data.clientIdAvailable, true);
+        assert.equal(
+          res1.body.data.redirectUri,
+          'https://unicloud.example.com/api/accounts/google/callback'
+        );
+
+        // 2. Simulate production with unconfigured Google OAuth credentials
+        delete process.env.GOOGLE_CLIENT_ID;
+        delete process.env.GOOGLE_CLIENT_SECRET;
+
+        const { req: req2, res: res2 } = createMockHttp({
+          method: 'GET',
+          url: '/api/accounts/google/config',
+        });
+        await new Promise<void>((resolve) => {
+          const originalJson = res2.json.bind(res2);
+          res2.json = (data: any) => {
+            originalJson(data);
+            resolve();
+          };
+          handler(req2, res2);
+        });
+
+        assert.equal(res2.statusCode, 200);
+        assert.equal(res2.body.data.isConfigured, false);
+        assert.equal(res2.body.data.clientIdAvailable, false);
+      } finally {
+        if (prevClientId) process.env.GOOGLE_CLIENT_ID = prevClientId;
+        else delete process.env.GOOGLE_CLIENT_ID;
+        if (prevClientSecret) process.env.GOOGLE_CLIENT_SECRET = prevClientSecret;
+        else delete process.env.GOOGLE_CLIENT_SECRET;
+        if (prevAppUrl) process.env.APP_URL = prevAppUrl;
+        else delete process.env.APP_URL;
+        if (prevRedirectUri) process.env.GOOGLE_REDIRECT_URI = prevRedirectUri;
+        else delete process.env.GOOGLE_REDIRECT_URI;
+      }
+    });
+
+    test('ProviderRegistry resolves GoogleDriveProvider under ESM without ERR_MODULE_NOT_FOUND', () => {
+      const provider = ProviderRegistry.get(ProviderType.GOOGLE_DRIVE);
+      assert.ok(provider);
+      assert.equal(provider.providerType, ProviderType.GOOGLE_DRIVE);
+      assert.ok(Array.isArray(ProviderRegistry.supportedProviders()));
+      assert.ok(ProviderRegistry.supportedProviders().includes(ProviderType.GOOGLE_DRIVE));
     });
   });
 });

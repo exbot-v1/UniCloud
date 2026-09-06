@@ -10,8 +10,8 @@
  * It is clearly tagged as demo data and does not represent real OAuth sessions.
  */
 
-import { StorageAccount, AccountStatus, ProviderType } from '../types/account';
-import { VirtualFile, VirtualFolder } from '../types/filesystem';
+import { StorageAccount, AccountStatus, ProviderType } from '../types/account.js';
+import { VirtualFile, VirtualFolder } from '../types/filesystem.js';
 
 export const DEMO_STORAGE_ACCOUNTS: StorageAccount[] = [
   {

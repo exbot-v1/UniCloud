@@ -11,7 +11,7 @@
  */
 
 import crypto from 'crypto';
-import { EncryptedTokenBundle } from '../../types/account';
+import { EncryptedTokenBundle } from '../../types/account.js';
 import { AppError } from './errors.js';
 import { ErrorCode } from '../../types/api.js';
 import { logger } from './logger.js';

@@ -5,8 +5,8 @@
  * UniCloud Core Types Barrel Export
  */
 
-export * from './api';
-export * from './account';
-export * from './filesystem';
-export * from './provider';
-export * from './upload';
+export * from './api.js';
+export * from './account.js';
+export * from './filesystem.js';
+export * from './provider.js';
+export * from './upload.js';

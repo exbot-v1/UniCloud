@@ -7,9 +7,9 @@
  * Domain service managing virtual folders, directory hierarchy, and breadcrumb trees.
  */
 
-import { VirtualFolder, BreadcrumbItem } from '../../types/filesystem';
-import { AppError } from '../utils/errors';
-import { ErrorCode } from '../../types/api';
+import { VirtualFolder, BreadcrumbItem } from '../../types/filesystem.js';
+import { AppError } from '../utils/errors.js';
+import { ErrorCode } from '../../types/api.js';
 
 export class FolderService {
   /**

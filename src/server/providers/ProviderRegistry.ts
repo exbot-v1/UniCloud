@@ -6,11 +6,11 @@
  * Resolves StorageProvider instances by provider type.
  */
 
-import { ProviderType } from '../../types/account';
-import { StorageProvider } from '../../types/provider';
-import { GoogleDriveProvider } from './GoogleDriveProvider';
-import { AppError } from '../utils/errors';
-import { ErrorCode } from '../../types/api';
+import { ProviderType } from '../../types/account.js';
+import { StorageProvider } from '../../types/provider.js';
+import { GoogleDriveProvider } from './GoogleDriveProvider.js';
+import { AppError } from '../utils/errors.js';
+import { ErrorCode } from '../../types/api.js';
 
 export class ProviderRegistry {
   private static providers: Map<ProviderType, StorageProvider> = new Map([

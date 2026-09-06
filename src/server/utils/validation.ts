@@ -5,8 +5,8 @@
  * UniCloud Input Validation Utilities
  */
 
-import { AppError } from './errors';
-import { ErrorCode } from '../../types/api';
+import { AppError } from './errors.js';
+import { ErrorCode } from '../../types/api.js';
 
 export function validateRequiredString(value: unknown, fieldName: string, minLength = 1, maxLength = 255): string {
   if (typeof value !== 'string' || value.trim().length < minLength) {

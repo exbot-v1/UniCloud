@@ -227,26 +227,31 @@ export class UserService {
    */
   public static async ensureDemoUser(): Promise<UserPublicProfile | null> {
     const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
-    const email = 'socialdoodle7@gmail.com';
-    const existing = await this.getUserByEmail(email);
-    if (existing) return existing;
-
     if (isProd) {
-      logger.info('Production mode: skipping demo user creation to preserve production database integrity');
+      logger.info('Production mode: skipping demo user initialization to preserve production database integrity');
       return null;
     }
 
+    const email = 'socialdoodle7@gmail.com';
     try {
+      const existing = await this.getUserByEmail(email);
+      if (existing) return existing;
+
       const session = await this.createUser({
         email,
         password: 'Password123!',
         displayName: 'socialdoodle7',
       });
       return session.user;
-    } catch {
-      const retry = await this.getUserByEmail(email);
-      if (retry) return retry;
-      throw new Error('Failed to ensure demo user');
+    } catch (err: any) {
+      logger.debug('Non-production demo user initialization note:', { message: err?.message });
+      try {
+        const retry = await this.getUserByEmail(email);
+        if (retry) return retry;
+      } catch {
+        // DB might be temporarily unavailable
+      }
+      return null;
     }
   }
 }

@@ -5,4 +5,4 @@
  * StorageProvider Interface & Base Contract
  */
 
-export type { StorageProvider } from '../../types/provider';
+export type { StorageProvider } from '../../types/provider.js';

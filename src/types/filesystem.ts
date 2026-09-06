@@ -9,7 +9,7 @@
  * and files onto physical files stored across disparate Google Drive accounts.
  */
 
-import { ProviderType } from './account';
+import { ProviderType } from './account.js';
 
 export interface VirtualFile {
   /** Internal UniCloud virtual file UUID */

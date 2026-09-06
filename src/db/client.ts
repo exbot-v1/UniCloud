@@ -25,7 +25,12 @@ let schemaPromise: Promise<void> | null = null;
  * Check whether a valid PostgreSQL connection string is configured
  */
 export function hasDatabaseUrl(): boolean {
-  return Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim().length > 0);
+  const url = process.env.DATABASE_URL?.trim();
+  if (!url) return false;
+  if (url.includes('[YOUR-PASSWORD]') || url.includes('[password]') || url.includes('<password>') || url.includes('your-password')) {
+    return false;
+  }
+  return true;
 }
 
 /**

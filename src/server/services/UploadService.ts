@@ -16,14 +16,14 @@ import {
   UploadRoutingDecision,
   UploadRoutingStrategy,
   UploadStatus,
-} from '../../types/upload';
-import { StorageAccount, ProviderType } from '../../types/account';
-import { AppError } from '../utils/errors';
-import { ErrorCode } from '../../types/api';
-import { logger } from '../utils/logger';
-import { accountService } from './AccountService';
-import { ProviderRegistry } from '../providers/ProviderRegistry';
-import { query, transaction } from '../../db/client';
+} from '../../types/upload.js';
+import { StorageAccount, ProviderType } from '../../types/account.js';
+import { AppError } from '../utils/errors.js';
+import { ErrorCode } from '../../types/api.js';
+import { logger } from '../utils/logger.js';
+import { accountService } from './AccountService.js';
+import { ProviderRegistry } from '../providers/ProviderRegistry.js';
+import { query, transaction } from '../../db/client.js';
 
 export class UploadService {
   private mapDbToJob(row: any): UploadJob {

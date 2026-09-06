@@ -8,7 +8,7 @@
  * Initial implementation targets Google Drive in subsequent phases.
  */
 
-import { ProviderType, StorageQuota } from './account';
+import { ProviderType, StorageQuota } from './account.js';
 
 export interface ProviderFileMetadata {
   providerFileId: string;

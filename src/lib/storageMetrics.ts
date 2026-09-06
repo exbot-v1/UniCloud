@@ -6,7 +6,7 @@
  * Safe for both client-side and server-side execution.
  */
 
-import { StorageAccount, StoragePoolSummary, AccountStatus } from '../types/account';
+import { StorageAccount, StoragePoolSummary, AccountStatus } from '../types/account.js';
 
 export function calculateStoragePoolMetrics(accounts: StorageAccount[]): StoragePoolSummary {
   const activeAccounts = accounts.filter(
