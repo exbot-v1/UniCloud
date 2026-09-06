@@ -34,20 +34,49 @@ export interface SyncResult {
 }
 
 export class SyncService {
+  private inFlightSyncs = new Map<string, Promise<SyncResult>>();
+
   /**
    * Synchronizes an individual connected Google Drive account (Full Sync):
    * 1. Refreshes OAuth access token using stored encrypted refresh token.
    * 2. Retrieves actual storage quota via Google Drive v3 `about.get` and persists it.
-   * 3. Queries Google Drive v3 `files.list` with full pagination.
-   * 4. Resolves folder hierarchy in two passes (folders first, link parents, then files).
-   * 5. Idempotently upserts files and folders.
-   * 6. Marks stale/removed upstream files as trashed ONLY when pagination was complete.
-   * 7. Establishes initial change token for future delta syncs.
-   * 8. Records audit record in sync_history.
+   * 3. Establishes baseline change token BEFORE listing files to prevent baseline race condition.
+   * 4. Queries Google Drive v3 `files.list` with full pagination.
+   * 5. Resolves folder hierarchy in two passes (folders first, link parents, then files).
+   * 6. Idempotently upserts files and folders.
+   * 7. Marks stale/removed upstream files as trashed ONLY when pagination was complete.
+   * 8. Establishes initial change token for future delta syncs.
+   * 9. Records audit record in sync_history.
    */
   async syncAccount(userId: string, accountId: string): Promise<SyncResult> {
+    const syncKey = `full:${userId}:${accountId}`;
+    const existing = this.inFlightSyncs.get(syncKey);
+    if (existing) {
+      logger.info(`Sync already in progress for account ${accountId}, coalescing with active run`);
+      return existing;
+    }
+
+    const promise = (async () => {
+      try {
+        return await this.executeSyncAccount(userId, accountId);
+      } finally {
+        this.inFlightSyncs.delete(syncKey);
+      }
+    })();
+
+    this.inFlightSyncs.set(syncKey, promise);
+    return promise;
+  }
+
+  private async executeSyncAccount(userId: string, accountId: string): Promise<SyncResult> {
     const syncStartTime = new Date();
     logger.info(`Starting full sync for account ${accountId}, user ${userId}`);
+
+    // Verify account is enabled
+    const account = await accountService.getAccountById(userId, accountId);
+    if (account.isEnabled === false) {
+      throw new AppError(ErrorCode.ACCOUNT_DISABLED, 'Account is disabled. Enable it before syncing.', 400);
+    }
 
     // Verify ownership and get credentials
     const credentials = await accountService.getDecryptedCredentials(userId, accountId);
@@ -61,7 +90,15 @@ export class SyncService {
       const quota = await provider.getStorageQuota(accessToken);
       await accountService.updateQuota(userId, accountId, quota);
 
-      // 3. Query Drive Metadata with complete pagination
+      // 3. Establish baseline change token BEFORE listing files to prevent race condition
+      let baselineChangeToken: string | null = null;
+      try {
+        baselineChangeToken = await provider.getStartPageToken(accessToken);
+      } catch (tokenErr: any) {
+        logger.warn(`Could not establish baseline start page token: ${tokenErr.message}`);
+      }
+
+      // 4. Query Drive Metadata with complete pagination
       const listResult = await provider.listFiles(accessToken, {
         fetchAllPages: true,
         pageSize: 100,
@@ -202,14 +239,16 @@ export class SyncService {
       }
 
       // 6. Establish and persist start change token for subsequent delta syncs (Phase 3)
-      let startChangeToken: string | null = null;
-      try {
-        startChangeToken = await provider.getStartPageToken(accessToken);
-        if (startChangeToken) {
-          await accountService.updateChangeToken(userId, accountId, startChangeToken);
+      let startChangeToken = baselineChangeToken;
+      if (!startChangeToken) {
+        try {
+          startChangeToken = await provider.getStartPageToken(accessToken);
+        } catch (tokenErr: any) {
+          logger.warn(`Could not establish start page token during full sync: ${tokenErr.message}`);
         }
-      } catch (tokenErr: any) {
-        logger.warn(`Could not establish start page token during full sync: ${tokenErr.message}`);
+      }
+      if (startChangeToken) {
+        await accountService.updateChangeToken(userId, accountId, startChangeToken);
       }
 
       // 7. Record sync audit record
@@ -274,8 +313,34 @@ export class SyncService {
    * 6. Audits delta sync in sync_history.
    */
   async syncDelta(userId: string, accountId: string): Promise<SyncResult> {
+    const syncKey = `delta:${userId}:${accountId}`;
+    const existing = this.inFlightSyncs.get(syncKey);
+    if (existing) {
+      logger.info(`Delta sync already in progress for account ${accountId}, coalescing with active run`);
+      return existing;
+    }
+
+    const promise = (async () => {
+      try {
+        return await this.executeSyncDelta(userId, accountId);
+      } finally {
+        this.inFlightSyncs.delete(syncKey);
+      }
+    })();
+
+    this.inFlightSyncs.set(syncKey, promise);
+    return promise;
+  }
+
+  private async executeSyncDelta(userId: string, accountId: string): Promise<SyncResult> {
     const syncStartTime = new Date();
     logger.info(`Starting delta sync for account ${accountId}, user ${userId}`);
+
+    // Verify account is enabled
+    const account = await accountService.getAccountById(userId, accountId);
+    if (account.isEnabled === false) {
+      throw new AppError(ErrorCode.ACCOUNT_DISABLED, 'Account is disabled. Enable it before syncing.', 400);
+    }
 
     // Verify ownership and get credentials
     const credentials = await accountService.getDecryptedCredentials(userId, accountId);
@@ -338,25 +403,52 @@ export class SyncService {
           };
         } else {
           logger.info(`No existing files found for account ${accountId}; executing initial full sync.`);
-          return await this.syncAccount(userId, accountId);
+          return await this.executeSyncAccount(userId, accountId);
         }
       }
 
-      // 4. Query changes from Google Drive
-      let changeResult;
-      try {
-        changeResult = await provider.listChanges(accessToken, {
-          pageToken: storedToken,
-          pageSize: 100,
-          includeRemoved: true,
-        });
-      } catch (err: any) {
-        if (isInvalidPageTokenError(err)) {
-          logger.warn(`Stored change token for account ${accountId} is invalid or expired. Safely recovering by rebuilding sync state.`);
-          return await this.recoverSyncState(userId, accountId, provider, accessToken);
+      // 4. Query changes from Google Drive (consuming all available change pages)
+      const allChanges: any[] = [];
+      let currentToken: string = storedToken;
+      let newStartToken: string | null = null;
+      let pagesFetched = 0;
+      const maxDeltaPages = 20;
+
+      while (currentToken && pagesFetched < maxDeltaPages) {
+        pagesFetched++;
+        let pageResult: any;
+        try {
+          pageResult = await provider.listChanges(accessToken, {
+            pageToken: currentToken,
+            pageSize: 100,
+            includeRemoved: true,
+          });
+        } catch (err: any) {
+          if (isInvalidPageTokenError(err)) {
+            logger.warn(`Stored change token for account ${accountId} is invalid or expired. Safely recovering by rebuilding sync state.`);
+            return await this.recoverSyncState(userId, accountId, provider, accessToken);
+          }
+          throw err;
         }
-        throw err;
+
+        allChanges.push(...pageResult.changes);
+
+        if (pageResult.newStartPageToken) {
+          newStartToken = pageResult.newStartPageToken;
+          break;
+        } else if (pageResult.nextPageToken) {
+          currentToken = pageResult.nextPageToken;
+        } else {
+          break;
+        }
       }
+
+      const changeResult = {
+        changes: allChanges,
+        newStartPageToken: newStartToken,
+        nextPageToken: newStartToken ? undefined : currentToken,
+        paginationComplete: newStartToken !== null,
+      };
 
       // 5. Process changes
       let filesAddedCount = 0;
@@ -599,7 +691,7 @@ export class SyncService {
     const recoveryStart = new Date();
 
     // 1. Run full sync to rebuild metadata state
-    const fullResult = await this.syncAccount(userId, accountId);
+    const fullResult = await this.executeSyncAccount(userId, accountId);
 
     // 2. Fetch fresh startPageToken
     const freshToken = await provider.getStartPageToken(accessToken);

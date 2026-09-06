@@ -724,12 +724,75 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   if (/DELETE FROM virtual_files WHERE storage_account_id =/i.test(normalizedSql)) {
     const accountId = params[0];
+    const userId = params[1];
+    let count = 0;
     for (const [id, f] of memoryDb.virtualFiles.entries()) {
-      if (f.storage_account_id === accountId) {
+      if (f.storage_account_id === accountId && (!userId || f.user_id === userId)) {
         memoryDb.virtualFiles.delete(id);
+        count++;
       }
     }
-    return { rows: [], rowCount: 1 };
+    return { rows: [], rowCount: count };
+  }
+
+  if (/UPDATE virtual_files SET parent_id = NULL WHERE parent_id =/i.test(normalizedSql)) {
+    const folderId = params[0];
+    const userId = params[1];
+    let count = 0;
+    for (const f of memoryDb.virtualFiles.values()) {
+      if (f.parent_id === folderId && (!userId || f.user_id === userId)) {
+        f.parent_id = null;
+        f.updated_at = new Date().toISOString();
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
+  }
+
+  if (/UPDATE virtual_folders SET parent_id = NULL WHERE parent_id =/i.test(normalizedSql)) {
+    const folderId = params[0];
+    const userId = params[1];
+    let count = 0;
+    for (const f of memoryDb.virtualFolders.values()) {
+      if (f.parent_id === folderId && (!userId || f.user_id === userId)) {
+        f.parent_id = null;
+        f.updated_at = new Date().toISOString();
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
+  }
+
+  if (/UPDATE virtual_files SET is_trashed = (TRUE|FALSE).* WHERE parent_id =/i.test(normalizedSql)) {
+    const isTrashed = /is_trashed = TRUE/i.test(normalizedSql);
+    const folderId = params[0];
+    const userId = params[1];
+    let count = 0;
+    for (const f of memoryDb.virtualFiles.values()) {
+      if (f.parent_id === folderId && (!userId || f.user_id === userId)) {
+        f.is_trashed = isTrashed;
+        f.trashed_at = isTrashed ? new Date().toISOString() : null;
+        f.updated_at = new Date().toISOString();
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
+  }
+
+  if (/UPDATE virtual_folders SET is_trashed = (TRUE|FALSE).* WHERE parent_id =/i.test(normalizedSql)) {
+    const isTrashed = /is_trashed = TRUE/i.test(normalizedSql);
+    const folderId = params[0];
+    const userId = params[1];
+    let count = 0;
+    for (const f of memoryDb.virtualFolders.values()) {
+      if (f.parent_id === folderId && (!userId || f.user_id === userId)) {
+        f.is_trashed = isTrashed;
+        f.trashed_at = isTrashed ? new Date().toISOString() : null;
+        f.updated_at = new Date().toISOString();
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
   }
 
   if (/DELETE FROM virtual_folders WHERE storage_account_id = .* AND provider_folder_id =/i.test(normalizedSql)) {
@@ -748,12 +811,15 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   if (/DELETE FROM virtual_folders WHERE storage_account_id =/i.test(normalizedSql)) {
     const accountId = params[0];
+    const userId = params[1];
+    let count = 0;
     for (const [id, f] of memoryDb.virtualFolders.entries()) {
-      if (f.storage_account_id === accountId) {
+      if (f.storage_account_id === accountId && (!userId || f.user_id === userId)) {
         memoryDb.virtualFolders.delete(id);
+        count++;
       }
     }
-    return { rows: [], rowCount: 1 };
+    return { rows: [], rowCount: count };
   }
 
   if (/SELECT count\(\*\) .* FROM virtual_files WHERE storage_account_id =/i.test(normalizedSql)) {
@@ -1188,6 +1254,19 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     return { rows: list as any[], rowCount: list.length };
   }
 
+  if (/DELETE FROM sync_history WHERE storage_account_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    const userId = params[1];
+    let count = 0;
+    for (const [id, h] of memoryDb.syncHistory.entries()) {
+      if (h.storage_account_id === accountId && (!userId || h.user_id === userId)) {
+        memoryDb.syncHistory.delete(id);
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
+  }
+
   // 8. Upload Jobs (Phase 4)
   if (/INSERT INTO upload_jobs/i.test(normalizedSql)) {
     const jobRecord = {
@@ -1233,10 +1312,28 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   if (/DELETE FROM upload_jobs WHERE storage_account_id =/i.test(normalizedSql)) {
     const accountId = params[0];
+    const userId = params[1];
     let count = 0;
     for (const [id, j] of memoryDb.uploadJobs.entries()) {
-      if (j.storage_account_id === accountId) {
+      if (j.storage_account_id === accountId && (!userId || j.user_id === userId)) {
         memoryDb.uploadJobs.delete(id);
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
+  }
+
+  if (/UPDATE upload_jobs SET status = .* WHERE storage_account_id =/i.test(normalizedSql)) {
+    const status = params[0];
+    const errorMsg = params[1];
+    const accountId = params[2];
+    const userId = params[3];
+    let count = 0;
+    for (const j of memoryDb.uploadJobs.values()) {
+      if (j.storage_account_id === accountId && (!userId || j.user_id === userId)) {
+        j.status = status;
+        if (errorMsg) j.error_message = errorMsg;
+        j.updated_at = new Date().toISOString();
         count++;
       }
     }
@@ -1248,6 +1345,14 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     const userId = params[params.length - 1];
     const job = memoryDb.uploadJobs.get(jobId);
     if (job && job.user_id === userId) {
+      if (/status\s*!=\s*\$/i.test(normalizedSql)) {
+        // If query checks status != 'completed' (or another status), and job already has that status, no update
+        const statusIdx = params.findIndex(p => typeof p === 'string' && ['completed', 'aborted', 'failed'].includes(p));
+        if (statusIdx >= 0 && job.status === params[statusIdx]) {
+          return { rows: [], rowCount: 0 };
+        }
+      }
+
       job.updated_at = new Date().toISOString();
       if (/bytes_uploaded\s*=/i.test(normalizedSql)) {
         job.bytes_uploaded = Number(params[0]) || 0;

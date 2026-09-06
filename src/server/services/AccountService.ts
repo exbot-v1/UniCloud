@@ -9,7 +9,7 @@
  */
 
 import crypto from 'crypto';
-import { query } from '../../db/client.js';
+import { query, transaction } from '../../db/client.js';
 import { DbStorageAccount } from '../../db/schema.js';
 import { StorageAccount, StoragePoolSummary, ProviderType, AccountStatus, StorageQuota } from '../../types/account.js';
 import { AppError } from '../utils/errors.js';
@@ -380,25 +380,34 @@ export class AccountService {
       }
     }
 
-    // Clean up local virtual file mappings (preserves Google Drive files intact)
-    await query('DELETE FROM virtual_files WHERE storage_account_id = $1', [accountId]);
-    await query('DELETE FROM virtual_folders WHERE storage_account_id = $1', [accountId]);
-    await query('DELETE FROM upload_jobs WHERE storage_account_id = $1', [accountId]);
-
-    // Delete account
-    const deleteResult = await query(
-      `DELETE FROM storage_accounts 
-       WHERE id = $1 AND user_id = $2`,
-      [accountId, userId]
-    );
-
-    if (deleteResult.rowCount === 0) {
-      throw new AppError(
-        ErrorCode.RESOURCE_NOT_FOUND,
-        `Storage account with ID ${accountId} was not found or belongs to another user.`,
-        404
+    // Clean up local virtual file mappings, upload jobs, and sync history atomically with strict tenant isolation
+    await transaction(async (tx) => {
+      await tx.query(
+        `UPDATE upload_jobs 
+         SET status = 'aborted', error_message = 'Storage account disconnected', updated_at = NOW() 
+         WHERE storage_account_id = $1 AND user_id = $2 AND status = 'uploading'`,
+        [accountId, userId]
       );
-    }
+      await tx.query('DELETE FROM virtual_files WHERE storage_account_id = $1 AND user_id = $2', [accountId, userId]);
+      await tx.query('DELETE FROM virtual_folders WHERE storage_account_id = $1 AND user_id = $2', [accountId, userId]);
+      await tx.query('DELETE FROM upload_jobs WHERE storage_account_id = $1 AND user_id = $2', [accountId, userId]);
+      await tx.query('DELETE FROM sync_history WHERE storage_account_id = $1 AND user_id = $2', [accountId, userId]);
+
+      // Delete account
+      const deleteResult = await tx.query(
+        `DELETE FROM storage_accounts 
+         WHERE id = $1 AND user_id = $2`,
+        [accountId, userId]
+      );
+
+      if (deleteResult.rowCount === 0) {
+        throw new AppError(
+          ErrorCode.RESOURCE_NOT_FOUND,
+          `Storage account with ID ${accountId} was not found or belongs to another user.`,
+          404
+        );
+      }
+    });
 
     logger.info(`Successfully disconnected account ${accountId} for user ${userId}`);
   }
@@ -412,13 +421,25 @@ export class AccountService {
     const newEnabled = typeof isEnabled === 'boolean' ? isEnabled : !current.isEnabled;
     const now = new Date().toISOString();
 
-    await query(
-      `UPDATE storage_accounts SET
-        is_enabled = $1,
-        updated_at = $2
-       WHERE id = $3 AND user_id = $4`,
-      [newEnabled, now, accountId, userId]
-    );
+    await transaction(async (tx) => {
+      await tx.query(
+        `UPDATE storage_accounts SET
+          is_enabled = $1,
+          updated_at = $2
+         WHERE id = $3 AND user_id = $4`,
+        [newEnabled, now, accountId, userId]
+      );
+
+      // If disabling account, abort in-flight uploads targeting this account
+      if (!newEnabled) {
+        await tx.query(
+          `UPDATE upload_jobs 
+           SET status = 'aborted', error_message = 'Storage account disabled during upload', updated_at = NOW() 
+           WHERE storage_account_id = $1 AND user_id = $2 AND status = 'uploading'`,
+          [accountId, userId]
+        );
+      }
+    });
 
     return this.getAccountById(userId, accountId);
   }

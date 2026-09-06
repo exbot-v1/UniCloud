@@ -23,7 +23,7 @@ import { ErrorCode } from '../../types/api';
 import { logger } from '../utils/logger';
 import { accountService } from './AccountService';
 import { ProviderRegistry } from '../providers/ProviderRegistry';
-import { query } from '../../db/client';
+import { query, transaction } from '../../db/client';
 
 export class UploadService {
   private mapDbToJob(row: any): UploadJob {
@@ -160,11 +160,14 @@ export class UploadService {
     req: UploadInitiateRequest,
     accounts?: StorageAccount[]
   ): Promise<UploadJob> {
-    if (!req.fileName || req.fileName.trim() === '') {
+    if (!req.fileName || typeof req.fileName !== 'string' || req.fileName.trim() === '') {
       throw new AppError(ErrorCode.VALIDATION_ERROR, 'fileName is required for upload initiation.', 400);
     }
-    if (!req.sizeBytes || req.sizeBytes <= 0) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, 'sizeBytes must be greater than 0.', 400);
+    if (req.fileName.length > 255) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'fileName exceeds maximum length of 255 characters.', 400);
+    }
+    if (typeof req.sizeBytes !== 'number' || !Number.isFinite(req.sizeBytes) || req.sizeBytes <= 0) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'sizeBytes must be a positive finite number greater than 0.', 400);
     }
 
     // 1. Target folder validation if specified
@@ -289,6 +292,14 @@ export class UploadService {
       throw new AppError(ErrorCode.PROVIDER_ERROR, 'Resumable upload session URL is missing.', 500);
     }
 
+    // Verify assigned storage account is enabled
+    if (job.assignedAccountId) {
+      const account = await accountService.getAccountById(userId, job.assignedAccountId);
+      if (account.isEnabled === false) {
+        throw new AppError(ErrorCode.ACCOUNT_DISABLED, 'Assigned storage account is currently disabled.', 400);
+      }
+    }
+
     // 2. Parse chunk ranges
     let startByte = job.bytesUploaded;
     let endByte = startByte + chunk.byteLength - 1;
@@ -338,62 +349,79 @@ export class UploadService {
       return { completed: false, bytesUploaded: chunkResult.bytesUploaded, job };
     }
 
-    // 5. Completion flow: atomically create virtual file, update quota, and mark job completed
+    // 5. Completion flow: atomically claim completion first to avoid race conditions and double-counting quota
     const virtualFileId = crypto.randomUUID();
     const providerFileId = chunkResult.file?.providerFileId || `gdrive_${jobId}`;
+    let vfRow: any = null;
+    let alreadyCompleted = false;
 
-    const vfRes = await query(
-      `INSERT INTO virtual_files (
-        id, user_id, storage_account_id, parent_id, provider, provider_file_id,
-        name, mime_type, size_bytes, md5_checksum, web_url, is_starred, is_trashed,
-        provider_created_at, provider_modified_at, synced_at, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE, FALSE, $12, $13, NOW(), NOW(), NOW())
-      ON CONFLICT (storage_account_id, provider_file_id) DO UPDATE SET
-        name = EXCLUDED.name,
-        mime_type = EXCLUDED.mime_type,
-        size_bytes = EXCLUDED.size_bytes,
-        synced_at = NOW(),
-        updated_at = NOW()
-      RETURNING *`,
-      [
-        virtualFileId,
-        userId,
-        job.assignedAccountId,
-        job.targetFolderId || null,
-        'google_drive',
-        providerFileId,
-        job.fileName,
-        job.mimeType,
-        job.totalSizeBytes,
-        chunkResult.file?.md5Checksum || null,
-        chunkResult.file?.webUrl || null,
-        chunkResult.file?.createdAt || new Date().toISOString(),
-        chunkResult.file?.modifiedAt || new Date().toISOString(),
-      ]
-    );
-
-    // Update storage account used / free quota
-    if (job.assignedAccountId) {
-      await query(
-        `UPDATE storage_accounts SET 
-          used_bytes = used_bytes + $1, 
-          free_bytes = GREATEST(0, free_bytes - $1), 
-          updated_at = NOW() 
-         WHERE id = $2 AND user_id = $3`,
-        [job.totalSizeBytes, job.assignedAccountId, userId]
+    await transaction(async (tx) => {
+      const claimRes = await tx.query(
+        `UPDATE upload_jobs 
+         SET bytes_uploaded = $1, status = $2, completed_at = NOW(), updated_at = NOW() 
+         WHERE id = $3 AND user_id = $4 AND status != $2
+         RETURNING id`,
+        [job.totalSizeBytes, UploadStatus.COMPLETED, jobId, userId]
       );
-    }
 
-    // Finalize job record
-    const now = new Date().toISOString();
-    await query(
-      'UPDATE upload_jobs SET bytes_uploaded = $1, status = $2, completed_at = NOW(), updated_at = NOW() WHERE id = $3 AND user_id = $4',
-      [job.totalSizeBytes, UploadStatus.COMPLETED, jobId, userId]
-    );
+      if (claimRes.rowCount === 0) {
+        alreadyCompleted = true;
+        return;
+      }
+
+      const vfRes = await tx.query(
+        `INSERT INTO virtual_files (
+          id, user_id, storage_account_id, parent_id, provider, provider_file_id,
+          name, mime_type, size_bytes, md5_checksum, web_url, is_starred, is_trashed,
+          provider_created_at, provider_modified_at, synced_at, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE, FALSE, $12, $13, NOW(), NOW(), NOW())
+        ON CONFLICT (storage_account_id, provider_file_id) DO UPDATE SET
+          name = EXCLUDED.name,
+          mime_type = EXCLUDED.mime_type,
+          size_bytes = EXCLUDED.size_bytes,
+          synced_at = NOW(),
+          updated_at = NOW()
+        RETURNING *`,
+        [
+          virtualFileId,
+          userId,
+          job.assignedAccountId,
+          job.targetFolderId || null,
+          'google_drive',
+          providerFileId,
+          job.fileName,
+          job.mimeType,
+          job.totalSizeBytes,
+          chunkResult.file?.md5Checksum || null,
+          chunkResult.file?.webUrl || null,
+          chunkResult.file?.createdAt || new Date().toISOString(),
+          chunkResult.file?.modifiedAt || new Date().toISOString(),
+        ]
+      );
+      vfRow = vfRes.rows[0];
+
+      // Update storage account used / free quota atomically
+      if (job.assignedAccountId && job.totalSizeBytes > 0) {
+        await tx.query(
+          `UPDATE storage_accounts SET 
+            used_bytes = used_bytes + $1, 
+            free_bytes = GREATEST(0, free_bytes - $1), 
+            updated_at = NOW() 
+           WHERE id = $2 AND user_id = $3`,
+          [job.totalSizeBytes, job.assignedAccountId, userId]
+        );
+      }
+    });
+
+    if (alreadyCompleted) {
+      logger.info(`Upload job ${jobId} was already completed concurrently; avoiding double quota deduction.`);
+      const existingJob = await this.getJobStatus(userId, jobId);
+      return { completed: true, bytesUploaded: job.totalSizeBytes, job: existingJob };
+    }
 
     job.bytesUploaded = job.totalSizeBytes;
     job.status = UploadStatus.COMPLETED;
-    job.completedAt = now;
+    job.completedAt = new Date().toISOString();
 
     logger.info('Resumable upload completed successfully', {
       jobId,
@@ -406,7 +434,7 @@ export class UploadService {
       completed: true,
       bytesUploaded: job.totalSizeBytes,
       job,
-      file: vfRes.rows[0],
+      file: vfRow,
     };
   }
 
@@ -500,6 +528,10 @@ export class UploadService {
     // 2. If upstream session expired or unreachable, re-initiate on target account
     if (!job.assignedAccountId) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, 'No assigned account found on job to retry.', 400);
+    }
+    const account = await accountService.getAccountById(userId, job.assignedAccountId);
+    if (account.isEnabled === false) {
+      throw new AppError(ErrorCode.ACCOUNT_DISABLED, 'Assigned storage account is currently disabled.', 400);
     }
     const accessToken = await accountService.getValidAccessToken(userId, job.assignedAccountId);
     const provider = ProviderRegistry.get(ProviderType.GOOGLE_DRIVE);

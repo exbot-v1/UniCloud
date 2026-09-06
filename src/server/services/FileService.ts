@@ -9,7 +9,7 @@
  */
 
 import crypto from 'node:crypto';
-import { query } from '../../db/client.js';
+import { query, transaction } from '../../db/client.js';
 import { DbVirtualFile, DbVirtualFolder } from '../../db/schema.js';
 import { VirtualFile, VirtualFolder, FileFilterOptions } from '../../types/filesystem.js';
 import { ProviderType } from '../../types/account.js';
@@ -408,23 +408,25 @@ export class FileService {
       logger.warn(`Failed to permanently delete upstream file ${file.providerFileId}: ${err.message}`);
     }
 
-    await query(
-      `DELETE FROM virtual_files 
-       WHERE id = $1 AND user_id = $2`,
-      [fileId, userId]
-    );
-
-    // Reclaim storage quota on the account
-    if (file.sizeBytes > 0) {
-      await query(
-        `UPDATE storage_accounts 
-         SET used_bytes = GREATEST(0, used_bytes - $1),
-             free_bytes = free_bytes + $1,
-             updated_at = NOW() 
-         WHERE id = $2 AND user_id = $3`,
-        [file.sizeBytes, file.storageAccountId, userId]
+    await transaction(async (tx) => {
+      const delRes = await tx.query(
+        `DELETE FROM virtual_files 
+         WHERE id = $1 AND user_id = $2`,
+        [fileId, userId]
       );
-    }
+
+      // Reclaim storage quota on the account only if the file record was actually removed
+      if (delRes.rowCount > 0 && file.sizeBytes > 0) {
+        await tx.query(
+          `UPDATE storage_accounts 
+           SET used_bytes = GREATEST(0, used_bytes - $1),
+               free_bytes = free_bytes + $1,
+               updated_at = NOW() 
+           WHERE id = $2 AND user_id = $3`,
+          [file.sizeBytes, file.storageAccountId, userId]
+        );
+      }
+    });
 
     logger.info(`File ${fileId} permanently deleted by user ${userId}`);
   }
@@ -445,12 +447,26 @@ export class FileService {
       }
     }
 
-    await query(
-      `UPDATE virtual_folders 
-       SET is_trashed = true, trashed_at = NOW(), updated_at = NOW() 
-       WHERE id = $1 AND user_id = $2`,
-      [folderId, userId]
-    );
+    await transaction(async (tx) => {
+      await tx.query(
+        `UPDATE virtual_folders 
+         SET is_trashed = true, trashed_at = NOW(), updated_at = NOW() 
+         WHERE id = $1 AND user_id = $2`,
+        [folderId, userId]
+      );
+      await tx.query(
+        `UPDATE virtual_files 
+         SET is_trashed = true, trashed_at = NOW(), updated_at = NOW() 
+         WHERE parent_id = $1 AND user_id = $2 AND is_trashed = false`,
+        [folderId, userId]
+      );
+      await tx.query(
+        `UPDATE virtual_folders 
+         SET is_trashed = true, trashed_at = NOW(), updated_at = NOW() 
+         WHERE parent_id = $1 AND user_id = $2 AND is_trashed = false`,
+        [folderId, userId]
+      );
+    });
 
     return this.getFolderById(userId, folderId);
   }
@@ -471,18 +487,32 @@ export class FileService {
       }
     }
 
-    await query(
-      `UPDATE virtual_folders 
-       SET is_trashed = false, trashed_at = NULL, updated_at = NOW() 
-       WHERE id = $1 AND user_id = $2`,
-      [folderId, userId]
-    );
+    await transaction(async (tx) => {
+      await tx.query(
+        `UPDATE virtual_folders 
+         SET is_trashed = false, trashed_at = NULL, updated_at = NOW() 
+         WHERE id = $1 AND user_id = $2`,
+        [folderId, userId]
+      );
+      await tx.query(
+        `UPDATE virtual_files 
+         SET is_trashed = false, trashed_at = NULL, updated_at = NOW() 
+         WHERE parent_id = $1 AND user_id = $2 AND is_trashed = true`,
+        [folderId, userId]
+      );
+      await tx.query(
+        `UPDATE virtual_folders 
+         SET is_trashed = false, trashed_at = NULL, updated_at = NOW() 
+         WHERE parent_id = $1 AND user_id = $2 AND is_trashed = true`,
+        [folderId, userId]
+      );
+    });
 
     return this.getFolderById(userId, folderId);
   }
 
   /**
-   * Permanently deletes a virtual folder and all mapped references.
+   * Permanently deletes a virtual folder and unlinks child references.
    */
   async deleteFolderPermanent(userId: string, folderId: string): Promise<void> {
     const folder = await this.getFolderById(userId, folderId);
@@ -497,11 +527,21 @@ export class FileService {
       }
     }
 
-    await query(
-      `DELETE FROM virtual_folders 
-       WHERE id = $1 AND user_id = $2`,
-      [folderId, userId]
-    );
+    await transaction(async (tx) => {
+      await tx.query(
+        `UPDATE virtual_files SET parent_id = NULL, updated_at = NOW() WHERE parent_id = $1 AND user_id = $2`,
+        [folderId, userId]
+      );
+      await tx.query(
+        `UPDATE virtual_folders SET parent_id = NULL, updated_at = NOW() WHERE parent_id = $1 AND user_id = $2`,
+        [folderId, userId]
+      );
+      await tx.query(
+        `DELETE FROM virtual_folders 
+         WHERE id = $1 AND user_id = $2`,
+        [folderId, userId]
+      );
+    });
 
     logger.info(`Folder ${folderId} permanently deleted by user ${userId}`);
   }
@@ -517,9 +557,16 @@ export class FileService {
   ): Promise<VirtualFile> {
     const file = await this.getFileById(userId, fileId);
 
+    if (file.isTrashed) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'Cannot move a trashed file. Restore it first.', 400);
+    }
+
     let targetFolder: VirtualFolder | null = null;
     if (options.targetFolderId) {
       targetFolder = await this.getFolderById(userId, options.targetFolderId);
+      if (targetFolder.isTrashed) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, 'Cannot move file into a trashed folder.', 400);
+      }
     }
 
     // Determine target storage account
@@ -600,39 +647,40 @@ export class FileService {
       // Proceed with virtual mapping update for mock/dev
     }
 
-    // 3. Update virtual file mapping
-    await query(
-      `UPDATE virtual_files 
-       SET storage_account_id = $1,
-           provider_file_id = $2,
-           parent_id = $3,
-           updated_at = NOW() 
-       WHERE id = $4 AND user_id = $5`,
-      [targetAccountId, newProviderFileId, options.targetFolderId || null, fileId, userId]
-    );
-
-    // 4. Update quotas on both accounts
-    if (file.sizeBytes > 0) {
-      // Reclaim source
-      await query(
-        `UPDATE storage_accounts 
-         SET used_bytes = GREATEST(0, used_bytes - $1),
-             free_bytes = free_bytes + $1,
+    // 3. Atomically update virtual file mapping and adjust both quotas in a transaction
+    await transaction(async (tx) => {
+      await tx.query(
+        `UPDATE virtual_files 
+         SET storage_account_id = $1,
+             provider_file_id = $2,
+             parent_id = $3,
              updated_at = NOW() 
-         WHERE id = $2 AND user_id = $3`,
-        [file.sizeBytes, file.storageAccountId, userId]
+         WHERE id = $4 AND user_id = $5`,
+        [targetAccountId, newProviderFileId, options.targetFolderId || null, fileId, userId]
       );
 
-      // Consume destination
-      await query(
-        `UPDATE storage_accounts 
-         SET used_bytes = used_bytes + $1,
-             free_bytes = GREATEST(0, free_bytes - $1),
-             updated_at = NOW() 
-         WHERE id = $2 AND user_id = $3`,
-        [file.sizeBytes, targetAccountId, userId]
-      );
-    }
+      if (file.sizeBytes > 0) {
+        // Reclaim source quota
+        await tx.query(
+          `UPDATE storage_accounts 
+           SET used_bytes = GREATEST(0, used_bytes - $1),
+               free_bytes = free_bytes + $1,
+               updated_at = NOW() 
+           WHERE id = $2 AND user_id = $3`,
+          [file.sizeBytes, file.storageAccountId, userId]
+        );
+
+        // Consume destination quota
+        await tx.query(
+          `UPDATE storage_accounts 
+           SET used_bytes = used_bytes + $1,
+               free_bytes = GREATEST(0, free_bytes - $1),
+               updated_at = NOW() 
+           WHERE id = $2 AND user_id = $3`,
+          [file.sizeBytes, targetAccountId, userId]
+        );
+      }
+    });
 
     logger.info(`File ${fileId} moved cross-account to ${targetAccountId} by user ${userId}`);
     return this.getFileById(userId, fileId);
@@ -648,9 +696,16 @@ export class FileService {
   ): Promise<VirtualFile> {
     const file = await this.getFileById(userId, fileId);
 
+    if (file.isTrashed) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'Cannot copy a trashed file. Restore it first.', 400);
+    }
+
     let targetFolder: VirtualFolder | null = null;
     if (options.targetFolderId) {
       targetFolder = await this.getFolderById(userId, options.targetFolderId);
+      if (targetFolder.isTrashed) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, 'Cannot copy file into a trashed folder.', 400);
+      }
     }
 
     let targetAccountId = options.targetAccountId;
@@ -721,42 +776,44 @@ export class FileService {
     const newVirtualId = `vf_${crypto.randomUUID()}`;
     const now = new Date().toISOString();
 
-    await query(
-      `INSERT INTO virtual_files (
-        id, user_id, storage_account_id, parent_id, provider,
-        provider_file_id, name, mime_type, size_bytes, md5_checksum,
-        web_url, is_starred, is_trashed, provider_created_at, provider_modified_at,
-        synced_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $14)`,
-      [
-        newVirtualId,
-        userId,
-        targetAccountId,
-        options.targetFolderId !== undefined ? options.targetFolderId : file.parentId,
-        targetAccount.provider,
-        newProviderFileId,
-        copyName,
-        file.mimeType,
-        file.sizeBytes,
-        file.md5Checksum || null,
-        file.webUrl || null,
-        false,
-        false,
-        now,
-      ]
-    );
-
-    // Consume destination quota
-    if (file.sizeBytes > 0) {
-      await query(
-        `UPDATE storage_accounts 
-         SET used_bytes = used_bytes + $1,
-             free_bytes = GREATEST(0, free_bytes - $1),
-             updated_at = NOW() 
-         WHERE id = $2 AND user_id = $3`,
-        [file.sizeBytes, targetAccountId, userId]
+    await transaction(async (tx) => {
+      await tx.query(
+        `INSERT INTO virtual_files (
+          id, user_id, storage_account_id, parent_id, provider,
+          provider_file_id, name, mime_type, size_bytes, md5_checksum,
+          web_url, is_starred, is_trashed, provider_created_at, provider_modified_at,
+          synced_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $14)`,
+        [
+          newVirtualId,
+          userId,
+          targetAccountId,
+          options.targetFolderId !== undefined ? options.targetFolderId : file.parentId,
+          targetAccount.provider,
+          newProviderFileId,
+          copyName,
+          file.mimeType,
+          file.sizeBytes,
+          file.md5Checksum || null,
+          file.webUrl || null,
+          false,
+          false,
+          now,
+        ]
       );
-    }
+
+      // Consume destination quota atomically with file record creation
+      if (file.sizeBytes > 0) {
+        await tx.query(
+          `UPDATE storage_accounts 
+           SET used_bytes = used_bytes + $1,
+               free_bytes = GREATEST(0, free_bytes - $1),
+               updated_at = NOW() 
+           WHERE id = $2 AND user_id = $3`,
+          [file.sizeBytes, targetAccountId, userId]
+        );
+      }
+    });
 
     return this.getFileById(userId, newVirtualId);
   }
