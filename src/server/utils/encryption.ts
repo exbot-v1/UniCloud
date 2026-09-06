@@ -24,7 +24,7 @@ export function getEncryptionKey(): Buffer {
   const keyHex = process.env.ENCRYPTION_KEY || process.env.TOKEN_ENCRYPTION_KEY;
 
   if (!keyHex) {
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production') {
       throw new AppError(
         ErrorCode.CONFIGURATION_ERROR,
         'Production security requirement: ENCRYPTION_KEY or TOKEN_ENCRYPTION_KEY must be configured as a 64-character hexadecimal 256-bit key.',

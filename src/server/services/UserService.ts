@@ -222,12 +222,19 @@ export class UserService {
   }
 
   /**
-   * Ensure default demo/developer user (socialdoodle7@gmail.com) exists
+   * Ensure default demo/developer user (socialdoodle7@gmail.com) exists.
+   * STRICT SECURITY: Demo user creation is strictly prohibited in production environments.
    */
-  public static async ensureDemoUser(): Promise<UserPublicProfile> {
+  public static async ensureDemoUser(): Promise<UserPublicProfile | null> {
+    const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
     const email = 'socialdoodle7@gmail.com';
     const existing = await this.getUserByEmail(email);
     if (existing) return existing;
+
+    if (isProd) {
+      logger.info('Production mode: skipping demo user creation to preserve production database integrity');
+      return null;
+    }
 
     try {
       const session = await this.createUser({

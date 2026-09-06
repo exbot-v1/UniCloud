@@ -30,7 +30,7 @@ export interface SecurityConfigStatus {
  * secrets are missing or invalid in strict production mode.
  */
 export function validateSecurityConfiguration(): SecurityConfigStatus {
-  const isProduction = process.env.NODE_ENV === 'production';
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
   const isVercel = Boolean(process.env.VERCEL);
   const databaseConfigured = Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim().length > 0);
   const warnings: string[] = [];
@@ -41,6 +41,12 @@ export function validateSecurityConfiguration(): SecurityConfigStatus {
     const keyBuf = getEncryptionKey();
     if (keyBuf.length === 32) {
       encryptionValid = true;
+    } else if (isProduction) {
+      throw new AppError(
+        ErrorCode.CONFIGURATION_ERROR,
+        'Production security requirement: ENCRYPTION_KEY must decode to exactly 32 bytes (256 bits).',
+        500
+      );
     }
   } catch (err: any) {
     if (isProduction) {
@@ -57,6 +63,12 @@ export function validateSecurityConfiguration(): SecurityConfigStatus {
     const secret = getHmacSecret();
     if (secret && secret.length >= 16) {
       authSecretValid = true;
+    } else if (isProduction) {
+      throw new AppError(
+        ErrorCode.CONFIGURATION_ERROR,
+        'Production security requirement: AUTH_SECRET or SESSION_SECRET must be at least 16 characters in production.',
+        500
+      );
     }
   } catch (err: any) {
     if (isProduction) {

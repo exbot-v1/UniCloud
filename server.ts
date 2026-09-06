@@ -19,10 +19,12 @@ export async function startServer() {
   // Validate production security configuration & secrets before accepting traffic
   validateSecurityConfiguration();
 
-  // Initialize demo user for seamless local and preview evaluation
-  UserService.ensureDemoUser().catch((err) => {
-    logger.debug('Demo user initialization note:', { message: err?.message });
-  });
+  // Initialize demo user only in non-production environments
+  if (process.env.NODE_ENV !== 'production' && process.env.VERCEL_ENV !== 'production') {
+    UserService.ensureDemoUser().catch((err) => {
+      logger.debug('Demo user initialization note:', { message: err?.message });
+    });
+  }
 
   const PORT = 3000;
 

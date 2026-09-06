@@ -27,7 +27,7 @@ export interface OAuthStatePayload {
 export function getHmacSecret(): string {
   const secret = process.env.AUTH_SECRET || process.env.SESSION_SECRET;
   if (!secret) {
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production') {
       throw new AppError(
         ErrorCode.CONFIGURATION_ERROR,
         'AUTH_SECRET or SESSION_SECRET must be configured in production environment',

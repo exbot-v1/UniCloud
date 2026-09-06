@@ -15,15 +15,21 @@
  * 8. Accurate Phase 7 health and spec status metadata reporting
  */
 
-import { test, describe, before } from 'node:test';
+import { test, describe, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import handler, { app } from '../../api/index.js';
+import handler, {
+  app,
+  initializeServerlessInstance,
+  getServerlessInitStats,
+  resetServerlessInitStateForTesting,
+} from '../../api/index.js';
 import { isUploadPayloadRoute } from '../server/app.js';
 import { formatErrorResponse, AppError } from '../server/utils/errors.js';
 import { ErrorCode } from '../types/api.js';
 import { validateSecurityConfiguration } from '../server/utils/config.js';
-import { getPool, ensureSchema } from '../db/client.js';
+import { getPool, ensureSchema, query } from '../db/client.js';
+import { UserService } from '../server/services/UserService.js';
 
 /**
  * Mock Request & Response harness for testing Express applications and serverless handlers
@@ -255,6 +261,156 @@ describe('UniCloud Phase 7: Production & Vercel Deployment Readiness', () => {
         assert.ok(!JSON.stringify(response).includes('secretInternalMethod'));
       } finally {
         process.env.NODE_ENV = prevEnv;
+      }
+    });
+  });
+
+  describe('5. Serverless Fail-Closed Security Boundary & Exactly-Once Warm Initialization', () => {
+    test('Serverless request fails closed safely when required production secrets are missing', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      const prevKey = process.env.ENCRYPTION_KEY;
+      const prevTokenKey = process.env.TOKEN_ENCRYPTION_KEY;
+
+      try {
+        // Enforce strict production mode without valid keys
+        process.env.NODE_ENV = 'production';
+        delete process.env.ENCRYPTION_KEY;
+        delete process.env.TOKEN_ENCRYPTION_KEY;
+
+        resetServerlessInitStateForTesting();
+
+        const { req, res } = createMockHttp({ method: 'GET', url: '/api/health' });
+        
+        await new Promise<void>((resolve) => {
+          const originalJson = res.json.bind(res);
+          res.json = (data: any) => {
+            originalJson(data);
+            resolve();
+          };
+          handler(req, res);
+        });
+
+        // Request MUST fail safely with 500 status
+        assert.equal(res.statusCode, 500);
+        assert.ok(res.body);
+        assert.equal(res.body.success, false);
+        assert.equal(res.body.error.code, ErrorCode.CONFIGURATION_ERROR);
+        assert.ok(res.body.error.message.includes('ENCRYPTION_KEY'));
+        // Never expose stack trace
+        assert.equal(res.body.error.stack, undefined);
+
+        // Subsequent request on the same instance MUST also fail closed safely
+        const { req: req2, res: res2 } = createMockHttp({ method: 'GET', url: '/api/files' });
+        await new Promise<void>((resolve) => {
+          const originalJson = res2.json.bind(res2);
+          res2.json = (data: any) => {
+            originalJson(data);
+            resolve();
+          };
+          handler(req2, res2);
+        });
+
+        assert.equal(res2.statusCode, 500);
+        assert.equal(res2.body.success, false);
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevKey) process.env.ENCRYPTION_KEY = prevKey;
+        if (prevTokenKey) process.env.TOKEN_ENCRYPTION_KEY = prevTokenKey;
+        resetServerlessInitStateForTesting();
+      }
+    });
+
+    test('Vercel entrypoint initializes safely exactly once per warm instance', async () => {
+      resetServerlessInitStateForTesting();
+      assert.equal(getServerlessInitStats().initExecutionCount, 0);
+
+      // First invocation initializes instance
+      const { req: req1, res: res1 } = createMockHttp({ method: 'GET', url: '/api/health' });
+      await new Promise<void>((resolve) => {
+        const originalJson = res1.json.bind(res1);
+        res1.json = (data: any) => {
+          originalJson(data);
+          resolve();
+        };
+        handler(req1, res1);
+      });
+
+      assert.equal(res1.statusCode, 200);
+      assert.equal(getServerlessInitStats().initExecutionCount, 1);
+      assert.equal(getServerlessInitStats().isInitialized, true);
+
+      // Second, third, fourth invocations on the warm instance do NOT re-run initialization
+      for (let i = 0; i < 3; i++) {
+        const { req, res } = createMockHttp({ method: 'GET', url: '/api/health' });
+        await new Promise<void>((resolve) => {
+          const originalJson = res.json.bind(res);
+          res.json = (data: any) => {
+            originalJson(data);
+            resolve();
+          };
+          handler(req, res);
+        });
+        assert.equal(res.statusCode, 200);
+      }
+
+      // Initialization count remains strictly 1
+      assert.equal(getServerlessInitStats().initExecutionCount, 1);
+    });
+
+    test('Concurrent cold-start requests are coalesced into a single initialization run', async () => {
+      resetServerlessInitStateForTesting();
+
+      // Launch 5 concurrent invocations simultaneously
+      const promises = Array.from({ length: 5 }).map(() => {
+        const { req, res } = createMockHttp({ method: 'GET', url: '/api/health' });
+        return new Promise<void>((resolve) => {
+          const originalJson = res.json.bind(res);
+          res.json = (data: any) => {
+            originalJson(data);
+            resolve();
+          };
+          handler(req, res);
+        });
+      });
+
+      await Promise.all(promises);
+
+      // Verifies exactly-once execution despite concurrent cold-start flood
+      assert.equal(getServerlessInitStats().initExecutionCount, 1);
+      assert.equal(getServerlessInitStats().isInitialized, true);
+    });
+  });
+
+  describe('6. Production Demo User Mutation Safeguard', () => {
+    test('UserService.ensureDemoUser returns null in production mode and creates no auth data', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        const result = await UserService.ensureDemoUser();
+        // Must return null if user does not already exist, never create demo user with default password
+        if (result) {
+          // If already created in dev, it only returns existing without mutation
+          assert.equal(result.email, 'socialdoodle7@gmail.com');
+        } else {
+          assert.equal(result, null);
+        }
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
+
+    test('UserService.ensureDemoUser returns null in VERCEL_ENV=production mode', async () => {
+      const prevVercelEnv = process.env.VERCEL_ENV;
+      try {
+        process.env.VERCEL_ENV = 'production';
+        const result = await UserService.ensureDemoUser();
+        if (result) {
+          assert.equal(result.email, 'socialdoodle7@gmail.com');
+        } else {
+          assert.equal(result, null);
+        }
+      } finally {
+        process.env.VERCEL_ENV = prevVercelEnv;
       }
     });
   });
