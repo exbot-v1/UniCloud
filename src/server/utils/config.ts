@@ -16,18 +16,24 @@ import { getHmacSecret } from '../services/OAuthStateService.js';
 
 export interface SecurityConfigStatus {
   isProduction: boolean;
+  isVercel: boolean;
+  databaseConfigured: boolean;
   encryptionValid: boolean;
   authSecretValid: boolean;
   googleOAuthConfigured: boolean;
+  warnings?: string[];
 }
 
 /**
- * Validates critical security configuration at server startup.
+ * Validates critical security configuration at server startup or request time.
  * Throws AppError(ErrorCode.CONFIGURATION_ERROR) immediately if production
- * secrets are missing or invalid.
+ * secrets are missing or invalid in strict production mode.
  */
 export function validateSecurityConfiguration(): SecurityConfigStatus {
   const isProduction = process.env.NODE_ENV === 'production';
+  const isVercel = Boolean(process.env.VERCEL);
+  const databaseConfigured = Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim().length > 0);
+  const warnings: string[] = [];
 
   // 1. Verify 256-bit encryption key
   let encryptionValid = false;
@@ -40,6 +46,8 @@ export function validateSecurityConfiguration(): SecurityConfigStatus {
     if (isProduction) {
       logger.error('CRITICAL: Production encryption key validation failed');
       throw err;
+    } else {
+      warnings.push('Encryption key not configured; using development fallback key.');
     }
   }
 
@@ -54,6 +62,8 @@ export function validateSecurityConfiguration(): SecurityConfigStatus {
     if (isProduction) {
       logger.error('CRITICAL: Production auth secret validation failed');
       throw err;
+    } else {
+      warnings.push('Auth secret not configured; using development fallback secret.');
     }
   }
 
@@ -68,7 +78,10 @@ export function validateSecurityConfiguration(): SecurityConfigStatus {
       throw new AppError(ErrorCode.CONFIGURATION_ERROR, msg, 500);
     } else {
       logger.warn(msg);
+      warnings.push(msg);
     }
+  } else if (!googleOAuthConfigured) {
+    warnings.push('Google OAuth credentials not configured; live Google account linking will run in demo/simulation mode.');
   }
 
   if (isProduction) {
@@ -79,8 +92,11 @@ export function validateSecurityConfiguration(): SecurityConfigStatus {
 
   return {
     isProduction,
+    isVercel,
+    databaseConfigured,
     encryptionValid,
     authSecretValid,
     googleOAuthConfigured,
+    warnings: warnings.length > 0 ? warnings : undefined,
   };
 }

@@ -31,32 +31,52 @@ export class AppError extends Error {
   }
 }
 
+function sanitizeErrorMessage(msg: string): string {
+  if (!msg) return msg;
+  return msg
+    // Mask postgres / database connection URLs with passwords
+    .replace(/(postgres(?:ql)?:\/\/[^:]+:)[^@]+(@)/gi, '$1***$2')
+    // Mask bearer tokens
+    .replace(/(Bearer\s+)[A-Za-z0-9_\-\.]+/gi, '$1***')
+    // Mask client secrets and tokens in key-value format
+    .replace(/(client_secret|refresh_token|access_token|password|secret)=([^&\s]+)/gi, '$1=***')
+    // Mask raw encryption keys or auth tags (64 hex characters)
+    .replace(/\b[0-9a-fA-F]{64}\b/g, '[REDACTED_SECRET]');
+}
+
 export function formatErrorResponse(err: unknown): ApiResponse<never> {
+  const isProd = process.env.NODE_ENV === 'production';
+
   if (err instanceof AppError) {
     return {
       success: false,
       error: {
         code: err.errorCode,
-        message: err.message,
+        message: sanitizeErrorMessage(err.message),
         details: err.details,
       },
       meta: {
         timestamp: new Date().toISOString(),
-        version: '1.0.0-phase0',
+        version: '1.7.0-phase7',
       },
     };
   }
 
-  const message = err instanceof Error ? err.message : 'An unexpected error occurred';
+  // Never expose internal unhandled errors, stack traces, or credentials in production
+  const rawMessage = err instanceof Error ? err.message : 'An unexpected error occurred';
+  const safeMessage = isProd
+    ? 'An internal server error occurred. Please try again later.'
+    : sanitizeErrorMessage(rawMessage);
+
   return {
     success: false,
     error: {
       code: ErrorCode.INTERNAL_ERROR,
-      message,
+      message: safeMessage,
     },
     meta: {
       timestamp: new Date().toISOString(),
-      version: '1.0.0-phase0',
+      version: '1.7.0-phase7',
     },
   };
 }

@@ -4,19 +4,18 @@
  * 
  * UniCloud Server Entry Point
  * Express API server with Vite middleware integration.
+ * Used for local development (npm run dev) and containerized production (Cloud Run / Docker).
  */
 
 import express from 'express';
-import cookieParser from 'cookie-parser';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { apiRouter } from './src/server/api/routes';
-import { logger } from './src/server/utils/logger';
-import { validateSecurityConfiguration } from './src/server/utils/config';
-import { sendApiError } from './src/server/utils/errors';
-import { UserService } from './src/server/services/UserService';
+import { app } from './src/server/app.js';
+import { logger } from './src/server/utils/logger.js';
+import { validateSecurityConfiguration } from './src/server/utils/config.js';
+import { UserService } from './src/server/services/UserService.js';
 
-async function startServer() {
+export async function startServer() {
   // Validate production security configuration & secrets before accepting traffic
   validateSecurityConfiguration();
 
@@ -25,22 +24,9 @@ async function startServer() {
     logger.debug('Demo user initialization note:', { message: err?.message });
   });
 
-  const app = express();
   const PORT = 3000;
 
-  // JSON request body parser & Cookie parser
-  app.use(express.json());
-  app.use(cookieParser());
-
-  // Mount UniCloud API Routes
-  app.use('/api', apiRouter);
-
-  // Global API error handler ensuring clean JSON error responses
-  app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    sendApiError(res, err);
-  });
-
-  // Vite middleware setup
+  // Vite middleware setup in development or static SPA serving in production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -55,12 +41,20 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     logger.info(`UniCloud server running on http://0.0.0.0:${PORT}`);
+  });
+
+  return server;
+}
+
+// Only auto-listen if executed directly in local or containerized environments (not in Vercel Functions)
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    logger.error('Failed to start UniCloud server', err);
+    process.exit(1);
   });
 }
 
-startServer().catch((err) => {
-  logger.error('Failed to start UniCloud server', err);
-  process.exit(1);
-});
+export { app };
+export default app;

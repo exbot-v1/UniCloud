@@ -14,9 +14,12 @@ import { logger } from '../server/utils/logger.js';
 
 const { Pool } = pg;
 
+const globalObj = globalThis as any;
+
 // Singleton pool instance
 let pool: pg.Pool | null = null;
 let schemaInitialized = false;
+let schemaPromise: Promise<void> | null = null;
 
 /**
  * Check whether a valid PostgreSQL connection string is configured
@@ -26,22 +29,35 @@ export function hasDatabaseUrl(): boolean {
 }
 
 /**
- * Initialize or retrieve the PostgreSQL connection pool
+ * Initialize or retrieve the PostgreSQL connection pool.
+ * In serverless environments (e.g. Vercel), caps connection pool to prevent
+ * connection storms across concurrent container instances and caches the pool on globalThis.
  */
 export function getPool(): pg.Pool | null {
   if (!hasDatabaseUrl()) {
     return null;
   }
 
+  if (globalObj.__unicloud_pg_pool) {
+    return globalObj.__unicloud_pg_pool;
+  }
+
   if (!pool) {
     const connectionString = process.env.DATABASE_URL!;
     const isLocalhost = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
+    const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+    // In serverless environments, avoid connection storms by capping pool size to 1-2 per lambda
+    const defaultMax = isServerless ? 1 : 10;
+    const maxConnections = process.env.DATABASE_MAX_CONNECTIONS
+      ? parseInt(process.env.DATABASE_MAX_CONNECTIONS, 10)
+      : defaultMax;
 
     pool = new Pool({
       connectionString,
-      max: process.env.DATABASE_MAX_CONNECTIONS ? parseInt(process.env.DATABASE_MAX_CONNECTIONS, 10) : 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 8000,
+      max: maxConnections,
+      idleTimeoutMillis: isServerless ? 10000 : 30000,
+      connectionTimeoutMillis: isServerless ? 5000 : 8000,
       ssl: isLocalhost || process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
     });
 
@@ -49,9 +65,12 @@ export function getPool(): pg.Pool | null {
       logger.error('Unexpected idle PostgreSQL client error', { error: err.message });
     });
 
+    globalObj.__unicloud_pg_pool = pool;
+
     logger.info('PostgreSQL connection pool established', {
       max: pool.options.max,
       ssl: Boolean(pool.options.ssl),
+      isServerless,
     });
   }
 
@@ -59,20 +78,24 @@ export function getPool(): pg.Pool | null {
 }
 
 /**
- * Ensure baseline schema tables exist when connecting to PostgreSQL
+ * Ensure baseline schema tables exist when connecting to PostgreSQL.
+ * Deduplicates concurrent calls and caches initialization status.
  */
 export async function ensureSchema(): Promise<void> {
-  if (schemaInitialized) return;
+  if (schemaInitialized || globalObj.__unicloud_schema_initialized) return;
 
   const currentPool = getPool();
   if (!currentPool) {
     schemaInitialized = true;
+    globalObj.__unicloud_schema_initialized = true;
     return;
   }
 
-  try {
-    // Create users & user_sessions & baseline tables if not present
-    await currentPool.query(`
+  if (!schemaPromise) {
+    schemaPromise = (async () => {
+      try {
+        // Create users & user_sessions & baseline tables if not present
+        await currentPool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         email VARCHAR(255) NOT NULL UNIQUE,
@@ -220,17 +243,23 @@ export async function ensureSchema(): Promise<void> {
       ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS drive_change_token TEXT;
     `);
 
-    schemaInitialized = true;
-    logger.info('Database schema verified and active');
-  } catch (err: any) {
-    logger.error('Failed to verify PostgreSQL schema', { error: err.message });
-    throw new AppError(
-      ErrorCode.INTERNAL_ERROR,
-      `Database initialization error: ${err.message}`,
-      500,
-      { originalError: err.message }
-    );
+        schemaInitialized = true;
+        globalObj.__unicloud_schema_initialized = true;
+        logger.info('Database schema verified and active');
+      } catch (err: any) {
+        schemaPromise = null;
+        logger.error('Failed to verify PostgreSQL schema', { error: err.message });
+        throw new AppError(
+          ErrorCode.INTERNAL_ERROR,
+          `Database initialization error: ${err.message}`,
+          500,
+          { originalError: err.message }
+        );
+      }
+    })();
   }
+
+  return schemaPromise;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,16 +276,20 @@ interface MemoryDb {
   uploadJobs: Map<string, any>;
 }
 
-const memoryDb: MemoryDb = {
-  users: new Map(),
-  userSessions: new Map(),
-  storageAccounts: new Map(),
-  virtualFolders: new Map(),
-  virtualFiles: new Map(),
-  oauthStates: new Map(),
-  syncHistory: new Map(),
-  uploadJobs: new Map(),
-};
+if (!globalObj.__unicloud_memory_db) {
+  globalObj.__unicloud_memory_db = {
+    users: new Map(),
+    userSessions: new Map(),
+    storageAccounts: new Map(),
+    virtualFolders: new Map(),
+    virtualFiles: new Map(),
+    oauthStates: new Map(),
+    syncHistory: new Map(),
+    uploadJobs: new Map(),
+  };
+}
+
+const memoryDb: MemoryDb = globalObj.__unicloud_memory_db;
 
 /**
  * Execute parameterized query against PostgreSQL or In-Memory Dev Store

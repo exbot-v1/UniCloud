@@ -42,11 +42,15 @@ apiRouter.get('/health', async (_req: Request, res: Response) => {
     const dbHealth = await checkDatabaseHealth();
     const isHealthy = dbHealth.isConnected;
 
+    const isProd = process.env.NODE_ENV === 'production';
+    const safeDbError = isProd && dbHealth.error ? 'Database connection unavailable' : dbHealth.error;
+
     const response: ApiResponse<{
       status: string;
       version: string;
       phase: string;
       environment: string;
+      runtime: string;
       database: {
         connected: boolean;
         mode: string;
@@ -58,20 +62,21 @@ apiRouter.get('/health', async (_req: Request, res: Response) => {
       success: isHealthy,
       data: {
         status: isHealthy ? 'healthy' : 'degraded',
-        version: '1.2.0-phase2',
-        phase: 'Phase 2: Google OAuth & Real Google Drive Accounts',
+        version: '1.7.0-phase7',
+        phase: 'Phase 7: Production & Vercel Readiness',
         environment: process.env.NODE_ENV || 'development',
+        runtime: process.env.VERCEL ? 'vercel-serverless' : 'node-container',
         database: {
           connected: dbHealth.isConnected,
           mode: dbHealth.mode,
           latencyMs: dbHealth.latencyMs,
-          error: dbHealth.error,
+          error: safeDbError,
         },
         serverTime: new Date().toISOString(),
       },
       meta: {
         timestamp: new Date().toISOString(),
-        version: '1.2.0-phase2',
+        version: '1.7.0-phase7',
       },
     };
 
@@ -95,39 +100,34 @@ apiRouter.get('/spec/status', (_req: Request, res: Response) => {
   }> = {
     success: true,
     data: {
-      currentPhase: 2,
-      phaseName: 'Phase 2: Google OAuth & Real Google Drive Accounts',
+      currentPhase: 7,
+      phaseName: 'Phase 7: Production & Vercel Readiness',
       completedMilestones: [
-        'PostgreSQL database connectivity, connection pooling, and in-memory dev engine',
-        'User identity and secure password hashing (bcrypt, 12 rounds)',
-        'Server-side session management with SHA-256 hashed token storage and HTTP-only cookies',
-        'Authentication middleware with strict user-tenant isolation',
-        'Database-backed AccountService with dynamic multi-account support (1, 10, 20+ accounts)',
-        'Database-backed FileService and virtual filesystem queries',
-        'Storage pool calculation dynamically querying database accounts',
-        'Health check verifying database latency and connection pool status',
-        'Google OAuth 2.0 flow with offline refresh_token and CSRF state token protection',
-        'AES-256-GCM encryption of OAuth refresh tokens at rest with 96-bit IV and 128-bit auth tag',
-        'GoogleDriveProvider with real Google Drive v3 about.get storage quota and files.list queries',
-        'Multi-account support: user can link 1 to 20+ accounts without hardcoded ceilings',
-        'Initial Drive metadata sync into virtual filesystem (virtual_files and virtual_folders)',
-        'Secure account disconnect with upstream Google token revocation and local cleanup',
+        'Phase 0: Architectural foundation, unified state model, responsive UI framework',
+        'Phase 1: Multi-tenant PostgreSQL database engine, user auth, sessions, virtual filesystem',
+        'Phase 2: Google OAuth 2.0, AES-256-GCM token encryption, Google Drive v3 quota & metadata',
+        'Phase 3: Incremental delta sync via Google Drive Changes API with token recovery',
+        'Phase 4: Resumable chunked upload engine, bounded memory streaming, intelligent storage routing',
+        'Phase 5: Unified cross-account search, filtering, trashing, file restore, and quota rebalancing',
+        'Phase 6: Transactional integrity, concurrent sync coalescing, account lifecycle hardening',
+        'Phase 7: Production & Vercel deployment readiness, serverless functions entrypoint, binary chunk routing, connection storm protection, sanitized error boundaries',
       ],
-      upcomingPhases: [
-        'Phase 3: Google Drive v3 API Sync & Virtual Filesystem Operations',
-        'Phase 4: Resumable Chunked Upload Direct-to-Drive Engine',
-        'Phase 5: Cross-Account Search, Trashing & Quota Optimization',
-      ],
+      upcomingPhases: [],
       architecturalGuarantees: [
-        'Zero client exposure: Google OAuth tokens and password hashes NEVER reach browser JS',
-        'Strict tenant isolation: All database queries enforce user_id scoping at service boundaries',
+        'Zero client exposure: Google OAuth tokens, encryption keys, and database credentials NEVER reach browser',
+        'Strict tenant isolation: All database queries and storage operations enforce user_id scoping at service boundaries',
+        'Serverless and container dual-runtime compatibility (Vercel Functions + Cloud Run / Docker)',
+        'Bounded-memory resumable uploads direct to Google Drive without intermediate disk or memory saturation',
+        'Binary upload chunks isolated from JSON body parser',
+        'Serverless-safe database connection pooling with connection storm mitigation',
+        'Cryptographic secret masking and sanitized production error responses',
         'Stateless backend: Designed for seamless deployment to Cloud Run, Docker, and Vercel',
         'Provider agnostic: StorageProvider abstraction decoupled from Google Drive details',
       ],
     },
     meta: {
       timestamp: new Date().toISOString(),
-      version: '1.2.0-phase2',
+      version: '1.7.0-phase7',
     },
   };
   res.json(response);
