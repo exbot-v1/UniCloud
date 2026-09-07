@@ -82,14 +82,14 @@ export class OAuthStateService {
 
     const parts = stateToken.split('.');
     if (parts.length !== 4) {
-      throw new AppError(ErrorCode.INVALID_STATE, 'Malformed OAuth state token format', 400);
+      throw new AppError(ErrorCode.INVALID_STATE, 'Invalid, expired, or already-used OAuth state token (malformed format)', 400);
     }
 
     const [stateId, userId, expiresAtStr, signature] = parts;
     const expiresAtMs = parseInt(expiresAtStr, 10);
 
     if (!stateId || !userId || !signature || isNaN(expiresAtMs)) {
-      throw new AppError(ErrorCode.INVALID_STATE, 'Malformed OAuth state token contents', 400);
+      throw new AppError(ErrorCode.INVALID_STATE, 'Invalid, expired, or already-used OAuth state token contents', 400);
     }
 
     // 1. Verify cryptographic signature
@@ -109,7 +109,7 @@ export class OAuthStateService {
     // 2. Verify expiration from payload
     if (Date.now() > expiresAtMs) {
       await query('DELETE FROM oauth_states WHERE state_id = $1', [stateId]).catch(() => {});
-      throw new AppError(ErrorCode.INVALID_STATE, 'OAuth session expired. Please try connecting your account again.', 400);
+      throw new AppError(ErrorCode.INVALID_STATE, 'Invalid, expired, or already-used OAuth state token (expired)', 400);
     }
 
     // 3. ATOMIC CONSUMPTION & REPLAY PROTECTION
@@ -121,23 +121,23 @@ export class OAuthStateService {
     );
 
     if (deleteResult.rows.length === 0) {
-      throw new AppError(ErrorCode.INVALID_STATE, 'OAuth state has already been used or was not recognized (replay detected)', 400);
+      throw new AppError(ErrorCode.INVALID_STATE, 'Invalid, expired, or already-used OAuth state token: OAuth state has already been used or was not recognized (replay detected)', 400);
     }
 
     const stateRow = deleteResult.rows[0];
 
     // 4. Verify database expiration timestamp
     if (new Date(stateRow.expires_at).getTime() < Date.now()) {
-      throw new AppError(ErrorCode.INVALID_STATE, 'OAuth session expired. Please try connecting your account again.', 400);
+      throw new AppError(ErrorCode.INVALID_STATE, 'Invalid, expired, or already-used OAuth state token (expired)', 400);
     }
 
     // 5. Verify user binding
     if (stateRow.user_id !== userId) {
-      throw new AppError(ErrorCode.INVALID_STATE, 'OAuth state user signature mismatch', 400);
+      throw new AppError(ErrorCode.INVALID_STATE, 'OAuth state token was issued for a different user session (signature mismatch)', 400);
     }
 
     if (options?.expectedUserId && stateRow.user_id !== options.expectedUserId) {
-      throw new AppError(ErrorCode.INVALID_STATE, 'OAuth state user binding mismatch', 400);
+      throw new AppError(ErrorCode.INVALID_STATE, 'OAuth state user binding mismatch: OAuth state token was issued for a different user session (tenant mismatch)', 400);
     }
 
     // 6. Verify provider binding

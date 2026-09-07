@@ -379,7 +379,7 @@ apiRouter.get('/accounts/google/connect', requireAuth, async (req: Request, res:
  * Validates state token, exchanges code for credentials, persists account in PostgreSQL,
  * runs initial metadata sync, and notifies parent window via postMessage.
  */
-const handleGoogleOAuthCallback = async (req: Request, res: Response) => {
+export const handleGoogleOAuthCallback = async (req: Request, res: Response) => {
   // 1. Check for user-cancelled or denied consent
   if (req.query.error) {
     const errorMsg = String(req.query.error_description || req.query.error);
@@ -477,12 +477,9 @@ const handleGoogleOAuthCallback = async (req: Request, res: Response) => {
       quota,
     });
 
-    // 6. Perform initial metadata synchronization (non-blocking if slow)
-    try {
-      await syncService.syncAccount(userId, account.id);
-    } catch (syncErr: any) {
-      logger.warn('Initial metadata sync encountered non-fatal error', { error: syncErr.message });
-    }
+    // 6. Trigger initial metadata synchronization asynchronously (non-blocking)
+    // Runs in the background without blocking the OAuth callback response to eliminate serverless timeouts
+    syncService.triggerInitialSync(userId, account.id);
 
     logger.info(`Successfully linked Google Drive account ${profile.email} (${isNew ? 'New' : 'Updated'}) for user ${userId}`);
 
@@ -562,7 +559,7 @@ const handleGoogleOAuthCallback = async (req: Request, res: Response) => {
 };
 
 // Canonical Google OAuth callback endpoint
-apiRouter.get('/accounts/google/callback', handleGoogleOAuthCallback);
+apiRouter.get('/accounts/google/callback', optionalAuth, handleGoogleOAuthCallback);
 
 // Disambiguation: permanently redirect legacy /api/auth/google/callback to canonical /api/accounts/google/callback
 apiRouter.get('/auth/google/callback', (req: Request, res: Response) => {

@@ -15,7 +15,7 @@
  * 8. Accurate Phase 7 health and spec status metadata reporting
  */
 
-import { test, describe, before, beforeEach } from 'node:test';
+import { test, describe, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import handler, {
@@ -40,11 +40,13 @@ import {
 } from '../db/client.js';
 import { UserService } from '../server/services/UserService.js';
 import { ProviderRegistry } from '../server/providers/ProviderRegistry.js';
-import { ProviderType } from '../types/account.js';
+import { ProviderType, AccountStatus } from '../types/account.js';
 import { SESSION_COOKIE_NAME, getSessionCookieOptions, getClearCookieOptions } from '../server/api/middleware/auth.js';
-import { getGoogleRedirectUri } from '../server/api/routes.js';
+import { getGoogleRedirectUri, handleGoogleOAuthCallback } from '../server/api/routes.js';
 import { GoogleDriveProvider } from '../server/providers/GoogleDriveProvider.js';
 import { OAuthStateService } from '../server/services/OAuthStateService.js';
+import { accountService } from '../server/services/AccountService.js';
+import { syncService } from '../server/services/SyncService.js';
 
 /**
  * Mock Request & Response harness for testing Express applications and serverless handlers
@@ -63,7 +65,17 @@ function createMockHttp(options: {
   req.path = options.url.split('?')[0];
   req.headers = options.headers || {};
   req.cookies = options.cookies || {};
-  req.query = {};
+  if (req.headers.cookie) {
+    const parts = req.headers.cookie.split(';');
+    for (const part of parts) {
+      const [key, val] = part.trim().split('=');
+      if (key && val) {
+        req.cookies[key] = decodeURIComponent(val);
+      }
+    }
+  }
+  const queryPart = options.url.split('?')[1];
+  req.query = queryPart ? Object.fromEntries(new URLSearchParams(queryPart)) : {};
   req.body = options.body;
 
   const res: any = {
@@ -72,6 +84,9 @@ function createMockHttp(options: {
     cookiesSet: [] as { name: string; val: any; options: any }[],
     cookiesCleared: [] as { name: string; options: any }[],
     body: null as any,
+    get text() {
+      return typeof this.body === 'string' ? this.body : (this.body ? JSON.stringify(this.body) : '');
+    },
     ended: false,
     setHeader(key: string, val: string) {
       this.headers[key.toLowerCase()] = val;
@@ -1162,6 +1177,527 @@ describe('UniCloud Phase 7: Production & Vercel Deployment Readiness', () => {
         }
         resetDatabaseStateForTesting();
       }
+    });
+  });
+
+  describe('10. P7.5 Google OAuth Callback Timeout & Asynchronous Initial Sync Fix', () => {
+    class MockOAuthGoogleDriveProvider extends GoogleDriveProvider {
+      public mockProfile = {
+        id: 'google_user_p75',
+        email: 'oauth_p75@example.com',
+        name: 'OAuth P75 Test User',
+        avatarUrl: 'https://example.com/avatar_p75.png',
+      };
+      public mockTokens = {
+        access_token: 'mock_oauth_access_token_p75',
+        refresh_token: 'mock_oauth_refresh_token_p75',
+        expiry_date: Date.now() + 3600000,
+      };
+      public mockQuota = {
+        totalBytes: 15000000000,
+        usedBytes: 5000000000,
+        freeBytes: 10000000000,
+        usagePercentage: 33.33,
+      };
+      public syncDelayMs = 0;
+      public syncFailureError: Error | null = null;
+      public listFilesCallCount = 0;
+      public onSyncStart?: () => void;
+
+      public async exchangeAuthCode(_code: string, _redirectUri?: string) {
+        return {
+          tokens: this.mockTokens,
+          profile: this.mockProfile,
+        };
+      }
+
+      public async getStorageQuota(_accessToken: string) {
+        return this.mockQuota;
+      }
+
+      public async refreshAuthentication(_refreshToken: string) {
+        return { accessToken: 'refreshed_p75_token', expiresInSeconds: 3600 };
+      }
+
+      public async getStartPageToken(_accessToken: string) {
+        return 'token_start_p75';
+      }
+
+      public async listFiles(_accessToken: string, _options?: any) {
+        this.listFilesCallCount++;
+        if (this.onSyncStart) {
+          this.onSyncStart();
+        }
+        if (this.syncDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, this.syncDelayMs));
+        }
+        if (this.syncFailureError) {
+          throw this.syncFailureError;
+        }
+        return {
+          files: [],
+          nextPageToken: null,
+          paginationComplete: true,
+        };
+      }
+
+      public async listChanges(_accessToken: string, _options?: any): Promise<any> {
+        return {
+          changes: [],
+          newStartPageToken: 'token_new_p75',
+          nextPageToken: undefined,
+        };
+      }
+    }
+
+    let defaultProvider: any;
+    let mockProvider: MockOAuthGoogleDriveProvider;
+
+    before(() => {
+      defaultProvider = ProviderRegistry.get(ProviderType.GOOGLE_DRIVE);
+    });
+
+    after(() => {
+      if (defaultProvider) {
+        ProviderRegistry.register(defaultProvider);
+      }
+    });
+
+    beforeEach(() => {
+      mockProvider = new MockOAuthGoogleDriveProvider();
+      ProviderRegistry.register(mockProvider);
+    });
+
+    test('OAuth callback returns HTTP 200 immediately without waiting for full metadata sync', async () => {
+      mockProvider.syncDelayMs = 400; // Simulated slow full drive sync
+
+      const email = `p75_test_user_${Date.now()}@example.com`;
+      const { user } = await UserService.createUser({ email, password: 'Password123!', displayName: 'P75 User' });
+      const redirectUri = getGoogleRedirectUri();
+      const state = await OAuthStateService.createState(user.id, redirectUri);
+
+      const startTime = Date.now();
+      const { req, res } = createMockHttp({
+        method: 'GET',
+        url: `/api/accounts/google/callback?code=mock_oauth_code_1&state=${state}`,
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalSend = res.send.bind(res);
+        res.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      const elapsed = Date.now() - startTime;
+      assert.equal(res.statusCode, 200, 'Callback must return HTTP 200');
+      assert.ok(
+        elapsed < 200,
+        `Callback must return immediately (<200ms) without waiting for 400ms sync, took ${elapsed}ms`
+      );
+      assert.match(res.text, /GOOGLE_ACCOUNT_CONNECTED/, 'Response must dispatch GOOGLE_ACCOUNT_CONNECTED message');
+      assert.match(res.text, /Account Connected!/, 'Response must render Account Connected card');
+
+      // Wait for background sync to complete cleanly
+      const activeSync = syncService.getActiveSync(user.id, mockProvider.mockProfile.id);
+      if (activeSync) {
+        await activeSync;
+      }
+    });
+
+    test('Successful OAuth connection returns even when initial sync is slow or delayed', async () => {
+      mockProvider.syncDelayMs = 500;
+      mockProvider.mockProfile = {
+        id: `google_user_slow_${Date.now()}`,
+        email: `slow_drive_${Date.now()}@example.com`,
+        name: 'Slow Drive User',
+        avatarUrl: null,
+      };
+
+      const email = `p75_slow_${Date.now()}@example.com`;
+      const { user } = await UserService.createUser({ email, password: 'Password123!', displayName: 'Slow User' });
+      const redirectUri = getGoogleRedirectUri();
+      const state = await OAuthStateService.createState(user.id, redirectUri);
+
+      const startTime = Date.now();
+      const { req, res } = createMockHttp({
+        method: 'GET',
+        url: `/api/accounts/google/callback?code=mock_oauth_code_2&state=${state}`,
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalSend = res.send.bind(res);
+        res.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      const elapsed = Date.now() - startTime;
+      assert.equal(res.statusCode, 200);
+      assert.ok(elapsed < 200, `Callback returned in ${elapsed}ms despite 500ms sync`);
+
+      // Verify that the background sync was indeed in flight and completes with valid result
+      const storedAccount = await query(
+        `SELECT id FROM storage_accounts WHERE user_id = $1 AND email = $2`,
+        [user.id, mockProvider.mockProfile.email]
+      );
+      assert.equal(storedAccount.rowCount, 1, 'Account must exist in database');
+      const accountId = storedAccount.rows[0].id;
+
+      const activeSync = syncService.getActiveSync(user.id, accountId);
+      if (activeSync) {
+        const syncResult = await activeSync;
+        assert.equal(syncResult.paginationComplete, true);
+        assert.equal(syncResult.quotaUpdated, true);
+      }
+    });
+
+    test('Account is persisted in database before metadata sync finishes or queries drive files', async () => {
+      mockProvider.syncDelayMs = 200;
+      mockProvider.mockProfile = {
+        id: `google_user_persist_${Date.now()}`,
+        email: `persist_drive_${Date.now()}@example.com`,
+        name: 'Persist Drive User',
+        avatarUrl: null,
+      };
+
+      const email = `p75_persist_${Date.now()}@example.com`;
+      const { user } = await UserService.createUser({ email, password: 'Password123!', displayName: 'Persist User' });
+      const redirectUri = getGoogleRedirectUri();
+      const state = await OAuthStateService.createState(user.id, redirectUri);
+
+      let accountFoundBeforeSyncFinished = false;
+      mockProvider.onSyncStart = () => {
+        // Query database synchronously right when listFiles is hit
+        const check = accountService.getAccountsForUser(user.id);
+        check.then((accounts) => {
+          if (accounts.some((a) => a.email === mockProvider.mockProfile.email)) {
+            accountFoundBeforeSyncFinished = true;
+          }
+        });
+      };
+
+      const { req, res } = createMockHttp({
+        method: 'GET',
+        url: `/api/accounts/google/callback?code=mock_oauth_code_3&state=${state}`,
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalSend = res.send.bind(res);
+        res.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      assert.equal(res.statusCode, 200);
+
+      // Verify account row is already committed in database
+      const dbAccount = await query(
+        `SELECT id, email, status, encrypted_refresh_token, total_bytes FROM storage_accounts WHERE user_id = $1 AND email = $2`,
+        [user.id, mockProvider.mockProfile.email]
+      );
+      assert.equal(dbAccount.rowCount, 1, 'Account must be persisted in database before sync finishes');
+      assert.equal(dbAccount.rows[0].email, mockProvider.mockProfile.email);
+      assert.ok(dbAccount.rows[0].encrypted_refresh_token, 'Tokens must be encrypted');
+      assert.equal(Number(dbAccount.rows[0].total_bytes), 15000000000);
+
+      const activeSync = syncService.getActiveSync(user.id, dbAccount.rows[0].id);
+      if (activeSync) {
+        await activeSync;
+      }
+      assert.equal(accountFoundBeforeSyncFinished, true, 'Account was visible to service while sync was running');
+    });
+
+    test('Initial sync failure does not undo a successful account connection', async () => {
+      mockProvider.syncDelayMs = 50;
+      mockProvider.syncFailureError = new Error('Google Drive API Rate Limit Exceeded (503)');
+      mockProvider.mockProfile = {
+        id: `google_user_fail_${Date.now()}`,
+        email: `failed_sync_${Date.now()}@example.com`,
+        name: 'Failed Sync User',
+        avatarUrl: null,
+      };
+
+      const email = `p75_fail_${Date.now()}@example.com`;
+      const { user } = await UserService.createUser({ email, password: 'Password123!', displayName: 'Fail User' });
+      const redirectUri = getGoogleRedirectUri();
+      const state = await OAuthStateService.createState(user.id, redirectUri);
+
+      const { req, res } = createMockHttp({
+        method: 'GET',
+        url: `/api/accounts/google/callback?code=mock_oauth_code_4&state=${state}`,
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalSend = res.send.bind(res);
+        res.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      // The callback connection itself MUST succeed with HTTP 200
+      assert.equal(res.statusCode, 200);
+      assert.match(res.text, /GOOGLE_ACCOUNT_CONNECTED/);
+
+      // Find the created account
+      const accountRes = await query(
+        `SELECT id, email, status, error_message FROM storage_accounts WHERE user_id = $1 AND email = $2`,
+        [user.id, mockProvider.mockProfile.email]
+      );
+      assert.equal(accountRes.rowCount, 1, 'Account must NOT be deleted or rolled back when sync fails');
+      const accountId = accountRes.rows[0].id;
+
+      // Wait for background initial sync error to settle
+      const activeSync = syncService.getActiveSync(user.id, accountId);
+      if (activeSync) {
+        try {
+          await activeSync;
+        } catch {
+          // Expected background failure
+        }
+      }
+
+      // Check that account status reflects error and history recorded the failure
+      const updatedAccountRes = await query(
+        `SELECT status, error_message FROM storage_accounts WHERE id = $1`,
+        [accountId]
+      );
+      assert.equal(updatedAccountRes.rows[0].status, AccountStatus.ERROR, 'Account status should reflect ERROR');
+      assert.match(
+        updatedAccountRes.rows[0].error_message,
+        /Rate Limit Exceeded/,
+        'Error message must be recorded on account'
+      );
+
+      const historyRes = await query(
+        `SELECT status, error_message FROM sync_history WHERE storage_account_id = $1`,
+        [accountId]
+      );
+      assert.ok(historyRes.rowCount > 0, 'Sync history must record the failed attempt');
+      assert.equal(historyRes.rows[historyRes.rowCount - 1].status, 'failed');
+      assert.match(historyRes.rows[historyRes.rowCount - 1].error_message, /Rate Limit Exceeded/);
+    });
+
+    test('Duplicate initial sync calls for the same account coalesce safely and prevent duplicate work', async () => {
+      mockProvider.syncDelayMs = 250;
+      mockProvider.mockProfile = {
+        id: `google_user_dupe_${Date.now()}`,
+        email: `dupe_sync_${Date.now()}@example.com`,
+        name: 'Dupe Sync User',
+        avatarUrl: null,
+      };
+
+      const email = `p75_dupe_${Date.now()}@example.com`;
+      const { user } = await UserService.createUser({ email, password: 'Password123!', displayName: 'Dupe User' });
+      
+      const { account } = await accountService.connectOrUpdateAccount({
+        userId: user.id,
+        provider: ProviderType.GOOGLE_DRIVE,
+        providerAccountId: mockProvider.mockProfile.id,
+        email: mockProvider.mockProfile.email,
+        displayName: mockProvider.mockProfile.name,
+        avatarUrl: null,
+        tokens: {
+          accessToken: mockProvider.mockTokens.access_token,
+          refreshToken: mockProvider.mockTokens.refresh_token,
+          expiresAt: new Date(mockProvider.mockTokens.expiry_date),
+        },
+        quota: mockProvider.mockQuota,
+      });
+
+      // Call triggerInitialSync concurrently twice
+      const promise1 = syncService.triggerInitialSync(user.id, account.id);
+      assert.equal(syncService.isSyncInProgress(user.id, account.id), true, 'Sync must be in progress');
+
+      const promise2 = syncService.triggerInitialSync(user.id, account.id);
+      assert.strictEqual(promise1, promise2, 'Concurrent sync requests must coalesce to the exact same promise');
+
+      // Also calling syncAccount directly must coalesce with the active run
+      const promise3 = syncService.syncAccount(user.id, account.id);
+      assert.strictEqual(promise1, promise3, 'Direct syncAccount must coalesce with active initial sync');
+
+      const [res1, res2, res3] = await Promise.all([promise1, promise2, promise3]);
+      assert.equal(res1.paginationComplete, true);
+      assert.equal(res2.paginationComplete, true);
+      assert.equal(res3.paginationComplete, true);
+      assert.equal(mockProvider.listFilesCallCount, 1, 'Provider listFiles should have executed only ONCE');
+      assert.equal(syncService.isSyncInProgress(user.id, account.id), false, 'Sync in progress cleared after finish');
+    });
+
+    test('Newly connected account can be refreshed/synchronized afterward through existing POST /api/accounts/:id/sync endpoint', async () => {
+      mockProvider.syncDelayMs = 20;
+      mockProvider.mockProfile = {
+        id: `google_user_sync_endpoint_${Date.now()}`,
+        email: `endpoint_sync_${Date.now()}@example.com`,
+        name: 'Endpoint Sync User',
+        avatarUrl: null,
+      };
+
+      const email = `p75_sync_end_${Date.now()}@example.com`;
+      const { user, sessionToken } = await UserService.createUser({ email, password: 'Password123!', displayName: 'Sync Endpoint User' });
+
+      const redirectUri = getGoogleRedirectUri();
+      const state = await OAuthStateService.createState(user.id, redirectUri);
+
+      // 1. Complete OAuth connection
+      const { req: cbReq, res: cbRes } = createMockHttp({
+        method: 'GET',
+        url: `/api/accounts/google/callback?code=mock_code_ep&state=${state}`,
+      });
+      await new Promise<void>((resolve) => {
+        const originalSend = cbRes.send.bind(cbRes);
+        cbRes.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(cbReq, cbRes);
+      });
+      assert.equal(cbRes.statusCode, 200);
+
+      const stored = await query(`SELECT id FROM storage_accounts WHERE user_id = $1 AND email = $2`, [
+        user.id,
+        mockProvider.mockProfile.email,
+      ]);
+      assert.equal(stored.rowCount, 1);
+      const accountId = stored.rows[0].id;
+
+      // Wait for initial background sync to settle
+      const initialSync = syncService.getActiveSync(user.id, accountId);
+      if (initialSync) {
+        await initialSync;
+      }
+
+      // 2. Refresh/synchronize account through POST /api/accounts/:id/sync
+      const { req: syncReq, res: syncRes } = createMockHttp({
+        method: 'POST',
+        url: `/api/accounts/${accountId}/sync`,
+        headers: {
+          cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
+        },
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalJson = syncRes.json.bind(syncRes);
+        syncRes.json = (body: any) => {
+          originalJson(body);
+          resolve();
+        };
+        app(syncReq, syncRes);
+      });
+
+      assert.equal(syncRes.statusCode, 200, 'Sync endpoint must return HTTP 200');
+      assert.equal(syncRes.body.success, true);
+      assert.ok(syncRes.body.data.syncResult);
+      assert.equal(syncRes.body.data.account.id, accountId);
+      assert.ok(syncRes.body.data.pool);
+    });
+
+    test('Existing OAuth state validation and single-use behavior remain intact', async () => {
+      // 1. Missing code and state -> 400
+      const { req: req1, res: res1 } = createMockHttp({
+        method: 'GET',
+        url: '/api/accounts/google/callback',
+      });
+      await new Promise<void>((resolve) => {
+        const originalSend = res1.send.bind(res1);
+        res1.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(req1, res1);
+      });
+      assert.equal(res1.statusCode, 400);
+      assert.match(res1.text, /Missing code or state/i);
+
+      // 2. Non-existent state -> 400
+      const { req: req2, res: res2 } = createMockHttp({
+        method: 'GET',
+        url: '/api/accounts/google/callback?code=mock_code&state=non_existent_state_token_123',
+      });
+      await new Promise<void>((resolve) => {
+        const originalSend = res2.send.bind(res2);
+        res2.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(req2, res2);
+      });
+      assert.equal(res2.statusCode, 400);
+      assert.match(res2.text, /Invalid, expired, or already-used/i);
+
+      // 3. Single-use protection: state can only be consumed once
+      const { user } = await UserService.createUser({ email: `state_test_${Date.now()}@example.com`, password: 'Password123!', displayName: 'State Test' });
+      const redirectUri = getGoogleRedirectUri();
+      const validState = await OAuthStateService.createState(user.id, redirectUri);
+
+      // First use -> succeeds
+      const { req: req3a, res: res3a } = createMockHttp({
+        method: 'GET',
+        url: `/api/accounts/google/callback?code=mock_code&state=${validState}`,
+      });
+      await new Promise<void>((resolve) => {
+        const originalSend = res3a.send.bind(res3a);
+        res3a.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(req3a, res3a);
+      });
+      assert.equal(res3a.statusCode, 200);
+
+      // Second use with the exact same state -> rejected with 400
+      const { req: req3b, res: res3b } = createMockHttp({
+        method: 'GET',
+        url: `/api/accounts/google/callback?code=mock_code&state=${validState}`,
+      });
+      await new Promise<void>((resolve) => {
+        const originalSend = res3b.send.bind(res3b);
+        res3b.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(req3b, res3b);
+      });
+      assert.equal(res3b.statusCode, 400);
+      assert.match(res3b.text, /Invalid, expired, or already-used/i);
+    });
+
+    test('Tenant isolation: callback rejects state token when session user does not match state user', async () => {
+      const { user: userA } = await UserService.createUser({ email: `tenant_a_${Date.now()}@example.com`, password: 'Password123!', displayName: 'Tenant A' });
+      const { user: userB, sessionToken: sessionTokenB } = await UserService.createUser({ email: `tenant_b_${Date.now()}@example.com`, password: 'Password123!', displayName: 'Tenant B' });
+
+      const redirectUri = getGoogleRedirectUri();
+      // State generated specifically for User A
+      const stateForUserA = await OAuthStateService.createState(userA.id, redirectUri);
+
+      // Request callback with session cookie for User B
+      const { req, res } = createMockHttp({
+        method: 'GET',
+        url: `/api/accounts/google/callback?code=mock_code&state=${stateForUserA}`,
+        headers: {
+          cookie: `${SESSION_COOKIE_NAME}=${sessionTokenB}`,
+        },
+      });
+
+      await new Promise<void>((resolve) => {
+        const originalSend = res.send.bind(res);
+        res.send = (body: any) => {
+          originalSend(body);
+          resolve();
+        };
+        app(req, res);
+      });
+
+      assert.equal(res.statusCode, 400, 'Cross-tenant state consumption must be rejected with 400');
+      assert.match(res.text, /OAuth state token was issued for a different user session/i);
     });
   });
 });

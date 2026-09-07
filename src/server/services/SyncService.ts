@@ -37,6 +37,38 @@ export class SyncService {
   private inFlightSyncs = new Map<string, Promise<SyncResult>>();
 
   /**
+   * Checks if any synchronization operation is currently active for the given account.
+   */
+  isSyncInProgress(userId: string, accountId: string): boolean {
+    return this.inFlightSyncs.has(`account:${userId}:${accountId}`);
+  }
+
+  /**
+   * Returns the active in-flight sync promise for the account if one exists.
+   */
+  getActiveSync(userId: string, accountId: string): Promise<SyncResult> | undefined {
+    return this.inFlightSyncs.get(`account:${userId}:${accountId}`);
+  }
+
+  /**
+   * Triggers initial metadata synchronization for a connected storage account asynchronously.
+   * Does NOT block the OAuth callback HTTP response.
+   * Coalesces with any active in-flight sync for the same account to prevent duplicate runs.
+   * Catches errors internally so callers are protected against unhandled promise rejections.
+   */
+  triggerInitialSync(userId: string, accountId: string): Promise<SyncResult> {
+    logger.info(`Triggering non-blocking initial metadata sync for account ${accountId}, user ${userId}`);
+    const syncPromise = this.syncAccount(userId, accountId);
+
+    // Non-fatal background error handler prevents unhandled rejection warnings in server runtimes
+    syncPromise.catch((err: any) => {
+      logger.warn(`Initial background sync completed with non-fatal error for account ${accountId}: ${err.message}`);
+    });
+
+    return syncPromise;
+  }
+
+  /**
    * Synchronizes an individual connected Google Drive account (Full Sync):
    * 1. Refreshes OAuth access token using stored encrypted refresh token.
    * 2. Retrieves actual storage quota via Google Drive v3 `about.get` and persists it.
@@ -48,8 +80,8 @@ export class SyncService {
    * 8. Establishes initial change token for future delta syncs.
    * 9. Records audit record in sync_history.
    */
-  async syncAccount(userId: string, accountId: string): Promise<SyncResult> {
-    const syncKey = `full:${userId}:${accountId}`;
+  syncAccount(userId: string, accountId: string): Promise<SyncResult> {
+    const syncKey = `account:${userId}:${accountId}`;
     const existing = this.inFlightSyncs.get(syncKey);
     if (existing) {
       logger.info(`Sync already in progress for account ${accountId}, coalescing with active run`);
@@ -299,6 +331,31 @@ export class SyncService {
       logger.error(`Failed to sync account ${accountId}`, { error: err.message });
       const status = err.code === ErrorCode.TOKEN_EXPIRED ? AccountStatus.TOKEN_EXPIRED : AccountStatus.ERROR;
       await accountService.updateAccountStatus(userId, accountId, status, err.message);
+
+      // Record failed sync history record for audit and observability
+      try {
+        await query(
+          `INSERT INTO sync_history (
+            id, user_id, storage_account_id, status, files_discovered,
+            files_added, files_updated, files_removed, error_message, started_at, completed_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+          [
+            crypto.randomUUID(),
+            userId,
+            accountId,
+            'failed',
+            0,
+            0,
+            0,
+            0,
+            err.message || 'Full sync failed',
+            syncStartTime.toISOString(),
+          ]
+        );
+      } catch (histErr: any) {
+        logger.warn(`Failed to record sync failure in sync_history: ${histErr.message}`);
+      }
+
       throw err;
     }
   }
@@ -312,11 +369,11 @@ export class SyncService {
    * 5. Persists the new token ONLY after successful change processing.
    * 6. Audits delta sync in sync_history.
    */
-  async syncDelta(userId: string, accountId: string): Promise<SyncResult> {
-    const syncKey = `delta:${userId}:${accountId}`;
+  syncDelta(userId: string, accountId: string): Promise<SyncResult> {
+    const syncKey = `account:${userId}:${accountId}`;
     const existing = this.inFlightSyncs.get(syncKey);
     if (existing) {
-      logger.info(`Delta sync already in progress for account ${accountId}, coalescing with active run`);
+      logger.info(`Sync already in progress for account ${accountId}, coalescing with active run`);
       return existing;
     }
 
@@ -672,6 +729,31 @@ export class SyncService {
       logger.error(`Failed to delta sync account ${accountId}`, { error: err.message });
       const status = err.code === ErrorCode.TOKEN_EXPIRED ? AccountStatus.TOKEN_EXPIRED : AccountStatus.ERROR;
       await accountService.updateAccountStatus(userId, accountId, status, err.message);
+
+      // Record failed delta sync history record for audit and observability
+      try {
+        await query(
+          `INSERT INTO sync_history (
+            id, user_id, storage_account_id, status, files_discovered,
+            files_added, files_updated, files_removed, error_message, started_at, completed_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+          [
+            crypto.randomUUID(),
+            userId,
+            accountId,
+            'failed',
+            0,
+            0,
+            0,
+            0,
+            err.message || 'Delta sync failed',
+            syncStartTime.toISOString(),
+          ]
+        );
+      } catch (histErr: any) {
+        logger.warn(`Failed to record delta sync failure in sync_history: ${histErr.message}`);
+      }
+
       throw err;
     }
   }

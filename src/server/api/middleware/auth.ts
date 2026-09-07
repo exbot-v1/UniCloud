@@ -73,6 +73,14 @@ export function extractSessionToken(req: Request): string | null {
     return req.cookies[SESSION_COOKIE_NAME];
   }
 
+  const rawCookie = req.headers?.cookie;
+  if (rawCookie) {
+    const match = rawCookie.match(new RegExp(`(?:^|;\\s*)${SESSION_COOKIE_NAME}=([^;]+)`));
+    if (match) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     return authHeader.substring(7).trim();
