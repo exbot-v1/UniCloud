@@ -20,7 +20,8 @@ import { calculateStoragePoolMetrics } from './lib/storageMetrics';
 import { authFetch, clearSessionToken } from './lib/api';
 import { StorageAccount, StoragePoolSummary } from './types/account';
 import { UserPublicProfile } from './types/auth';
-import { VirtualFile } from './types/filesystem';
+import { VirtualFile, VirtualFolder } from './types/filesystem';
+import { FilePreviewModal } from './components/FilePreviewModal';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveNavTab>('files');
@@ -29,6 +30,10 @@ export default function App() {
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isAddAccountModalOpen, setIsAddAccountModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
+  // Global search preview and folder navigation
+  const [globalPreviewFile, setGlobalPreviewFile] = useState<VirtualFile | null>(null);
+  const [targetFolderToOpen, setTargetFolderToOpen] = useState<VirtualFolder | null>(null);
 
   // Authenticated user state
   const [user, setUser] = useState<UserPublicProfile | null>(null);
@@ -206,6 +211,11 @@ export default function App() {
           onOpenAuth={() => setIsAuthModalOpen(true)}
           onLogout={handleLogout}
           onNavigateProfile={() => setActiveTab('profile')}
+          onSelectFile={(file) => setGlobalPreviewFile(file)}
+          onSelectFolder={(folder) => {
+            setActiveTab('files');
+            setTargetFolderToOpen(folder);
+          }}
         />
 
         {/* Scrollable Main View */}
@@ -221,6 +231,9 @@ export default function App() {
               activeView="files"
               isDemoData={false}
               onRefreshStoragePool={loadUserData}
+              onPreviewFile={(f) => setGlobalPreviewFile(f)}
+              targetFolderToOpen={targetFolderToOpen}
+              onClearTargetFolder={() => setTargetFolderToOpen(null)}
             />
           )}
 
@@ -235,6 +248,7 @@ export default function App() {
               activeView="recent"
               isDemoData={false}
               onRefreshStoragePool={loadUserData}
+              onPreviewFile={(f) => setGlobalPreviewFile(f)}
             />
           )}
 
@@ -249,6 +263,7 @@ export default function App() {
               activeView="starred"
               isDemoData={false}
               onRefreshStoragePool={loadUserData}
+              onPreviewFile={(f) => setGlobalPreviewFile(f)}
             />
           )}
 
@@ -263,6 +278,7 @@ export default function App() {
               activeView="trash"
               isDemoData={false}
               onRefreshStoragePool={loadUserData}
+              onPreviewFile={(f) => setGlobalPreviewFile(f)}
             />
           )}
 
@@ -310,6 +326,22 @@ export default function App() {
         user={user}
         onOpenAuth={() => setIsAuthModalOpen(true)}
         onAccountConnected={() => loadUserData()}
+      />
+
+      {/* Global Search File Preview Modal */}
+      <FilePreviewModal
+        file={globalPreviewFile}
+        isOpen={!!globalPreviewFile}
+        onClose={() => setGlobalPreviewFile(null)}
+        onDownload={(file) => {
+          const downloadUrl = `/api/files/${file.id}/download`;
+          const anchor = document.createElement('a');
+          anchor.href = downloadUrl;
+          anchor.download = file.name;
+          document.body.appendChild(anchor);
+          anchor.click();
+          document.body.removeChild(anchor);
+        }}
       />
     </div>
   );

@@ -888,6 +888,50 @@ apiRouter.get('/files/:id', requireAuth, async (req: Request, res: Response) => 
 });
 
 /**
+ * GET /api/files/:id/download
+ * Downloads file binary content directly or redirects to provider webUrl
+ */
+apiRouter.get('/files/:id/download', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const result = await fileService.downloadFile(req.user!.id, req.params.id);
+    if (result.redirectUrl && !result.content) {
+      return res.redirect(result.redirectUrl);
+    }
+    if (result.content) {
+      res.setHeader('Content-Type', result.file.mimeType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(result.file.name)}"`);
+      res.setHeader('Content-Length', result.content.length);
+      return res.send(result.content);
+    }
+    res.status(404).json({ success: false, error: { message: 'File content unavailable' } });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * GET /api/files/:id/content
+ * Returns raw or inline content for file preview
+ */
+apiRouter.get('/files/:id/content', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const result = await fileService.downloadFile(req.user!.id, req.params.id);
+    if (result.redirectUrl && !result.content) {
+      return res.redirect(result.redirectUrl);
+    }
+    if (result.content) {
+      res.setHeader('Content-Type', result.file.mimeType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(result.file.name)}"`);
+      res.setHeader('Content-Length', result.content.length);
+      return res.send(result.content);
+    }
+    res.status(404).json({ success: false, error: { message: 'File content unavailable' } });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
  * PATCH /api/files/:id/star
  * Toggle starred status on virtual file
  */

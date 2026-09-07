@@ -32,11 +32,18 @@ import {
   ArrowLeft,
   ChevronRight,
   Check,
+  Eye,
+  Download,
+  FolderInput,
+  Copy,
 } from 'lucide-react';
 import { VirtualFile, VirtualFolder, ViewMode } from '../types/filesystem';
 import { StorageAccount } from '../types/account';
 import { cn, formatBytes, formatDate } from '../lib/formatters';
 import { authFetch } from '../lib/api';
+import { FilePreviewModal } from './FilePreviewModal';
+import { MoveCopyModal } from './MoveCopyModal';
+import { ContextMenu } from './ContextMenu';
 
 export interface FilesViewProps {
   folders?: VirtualFolder[];
@@ -50,6 +57,9 @@ export interface FilesViewProps {
   activeView?: 'files' | 'recent' | 'starred' | 'trash';
   isDemoData?: boolean;
   onRefreshStoragePool?: () => void;
+  targetFolderToOpen?: { id: string; name: string } | null;
+  onClearTargetFolder?: () => void;
+  onPreviewFile?: (file: VirtualFile) => void;
 }
 
 interface BreadcrumbNode {
@@ -68,6 +78,9 @@ export const FilesView: React.FC<FilesViewProps> = ({
   tabTitle = 'My Files',
   activeView = 'files',
   onRefreshStoragePool,
+  targetFolderToOpen,
+  onClearTargetFolder,
+  onPreviewFile,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -75,7 +88,29 @@ export const FilesView: React.FC<FilesViewProps> = ({
     { id: null, name: tabTitle },
   ]);
   const [selectedFile, setSelectedFile] = useState<VirtualFile | null>(null);
+  const [selectedFolder, setSelectedFolder] = useState<VirtualFolder | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+
+  // Preview & Context & Move/Copy states
+  const [previewFile, setPreviewFile] = useState<VirtualFile | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    isOpen: boolean;
+    position: { x: number; y: number };
+    target: VirtualFile | VirtualFolder | null;
+  }>({
+    isOpen: false,
+    position: { x: 0, y: 0 },
+    target: null,
+  });
+  const [moveCopyModal, setMoveCopyModal] = useState<{
+    isOpen: boolean;
+    file: VirtualFile | null;
+    mode: 'move' | 'copy';
+  }>({
+    isOpen: false,
+    file: null,
+    mode: 'move',
+  });
 
   // Live filesystem state
   const [realFiles, setRealFiles] = useState<VirtualFile[]>([]);
@@ -101,8 +136,66 @@ export const FilesView: React.FC<FilesViewProps> = ({
     setCurrentFolderId(null);
     setBreadcrumbs([{ id: null, name: tabTitle }]);
     setSelectedFile(null);
+    setSelectedFolder(null);
     setActionMenuId(null);
   }, [activeView, tabTitle]);
+
+  // Navigate to target folder when requested by external search
+  useEffect(() => {
+    if (targetFolderToOpen) {
+      setCurrentFolderId(targetFolderToOpen.id);
+      setBreadcrumbs([
+        { id: null, name: tabTitle },
+        { id: targetFolderToOpen.id, name: targetFolderToOpen.name },
+      ]);
+      setSelectedFile(null);
+      setSelectedFolder(null);
+      onClearTargetFolder?.();
+    }
+  }, [targetFolderToOpen, tabTitle, onClearTargetFolder]);
+
+  // Keyboard navigation & shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is currently typing in an input/textarea
+      const tag = (document.activeElement?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (previewFile || renamingItem || isCreatingFolder || moveCopyModal.isOpen) return;
+
+      if (e.key === 'Escape') {
+        setSelectedFile(null);
+        setSelectedFolder(null);
+        setContextMenu((prev) => ({ ...prev, isOpen: false }));
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        if (selectedFile) {
+          e.preventDefault();
+          if (onPreviewFile) onPreviewFile(selectedFile);
+          else setPreviewFile(selectedFile);
+        } else if (selectedFolder) {
+          e.preventDefault();
+          handleNavigateFolder(selectedFolder);
+        }
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedFile && activeView !== 'trash') {
+          e.preventDefault();
+          handleMoveFileToTrash(selectedFile);
+        }
+      } else if (e.key === 'F2') {
+        if (selectedFile) {
+          e.preventDefault();
+          setRenamingItem({ id: selectedFile.id, name: selectedFile.name, isFolder: false });
+          setRenameValue(selectedFile.name);
+        } else if (selectedFolder) {
+          e.preventDefault();
+          setRenamingItem({ id: selectedFolder.id, name: selectedFolder.name, isFolder: true });
+          setRenameValue(selectedFolder.name);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedFile, selectedFolder, previewFile, renamingItem, isCreatingFolder, moveCopyModal.isOpen, activeView, onPreviewFile]);
 
   // Load real files and folders from the authenticated /api/files endpoint
   const fetchFilesystemData = useCallback(async (folderId: string | null) => {
@@ -337,6 +430,110 @@ export const FilesView: React.FC<FilesViewProps> = ({
       }
     } catch (err) {
       console.error('Failed to permanently delete file', err);
+    }
+  };
+
+  // Action: Direct binary download
+  const handleDownloadFile = (file: VirtualFile, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const downloadUrl = `/api/files/${file.id}/download`;
+    const anchor = document.createElement('a');
+    anchor.href = downloadUrl;
+    anchor.download = file.name;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
+  // Action: Trigger preview modal
+  const handlePreviewFile = (file: VirtualFile, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (onPreviewFile) {
+      onPreviewFile(file);
+    } else {
+      setPreviewFile(file);
+    }
+  };
+
+  // Action: Trash virtual folder
+  const handleTrashFolder = async (folder: VirtualFolder, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      const res = await authFetch(`/api/folders/${folder.id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setRealFolders((prev) => prev.filter((f) => f.id !== folder.id));
+        if (selectedFolder?.id === folder.id) setSelectedFolder(null);
+        onRefreshStoragePool?.();
+      }
+    } catch (err) {
+      console.error('Failed to trash folder', err);
+    }
+  };
+
+  // Action: Restore virtual folder
+  const handleRestoreFolder = async (folder: VirtualFolder, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      const res = await authFetch(`/api/folders/${folder.id}/restore`, { method: 'POST' });
+      if (res.ok) {
+        setRealFolders((prev) => prev.filter((f) => f.id !== folder.id));
+        if (selectedFolder?.id === folder.id) setSelectedFolder(null);
+        onRefreshStoragePool?.();
+      }
+    } catch (err) {
+      console.error('Failed to restore folder', err);
+    }
+  };
+
+  // Action: Permanently delete virtual folder
+  const handlePermanentDeleteFolder = async (folder: VirtualFolder, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      const res = await authFetch(`/api/folders/${folder.id}?permanent=true`, { method: 'DELETE' });
+      if (res.ok) {
+        setRealFolders((prev) => prev.filter((f) => f.id !== folder.id));
+        if (selectedFolder?.id === folder.id) setSelectedFolder(null);
+        onRefreshStoragePool?.();
+      }
+    } catch (err) {
+      console.error('Failed to permanently delete folder', err);
+    }
+  };
+
+  // Open right-click context menu
+  const handleContextMenu = (e: React.MouseEvent, target: VirtualFile | VirtualFolder) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      isOpen: true,
+      position: { x: e.clientX, y: e.clientY },
+      target,
+    });
+    if ('isFolder' in target && target.isFolder) {
+      setSelectedFolder(target as VirtualFolder);
+      setSelectedFile(null);
+    } else {
+      setSelectedFile(target as VirtualFile);
+      setSelectedFolder(null);
+    }
+  };
+
+  // Open context menu from three-dots action button
+  const handleOpenActionMenu = (e: React.MouseEvent, target: VirtualFile | VirtualFolder) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setContextMenu({
+      isOpen: true,
+      position: { x: rect.left, y: rect.bottom + 4 },
+      target,
+    });
+    if ('isFolder' in target && target.isFolder) {
+      setSelectedFolder(target as VirtualFolder);
+      setSelectedFile(null);
+    } else {
+      setSelectedFile(target as VirtualFile);
+      setSelectedFolder(null);
     }
   };
 
@@ -606,20 +803,32 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                   {filteredFolders.map((folder) => {
-                    const isSelected = currentFolderId === folder.id;
+                    const isSelected = selectedFolder?.id === folder.id;
                     const folderAccount = accounts.find((a) => a.id === folder.storageAccountId);
                     return (
                       <div
                         key={folder.id}
-                        onClick={() => handleNavigateFolder(folder)}
+                        onClick={() => {
+                          setSelectedFolder(isSelected ? null : folder);
+                          setSelectedFile(null);
+                        }}
+                        onDoubleClick={() => handleNavigateFolder(folder)}
+                        onContextMenu={(e) => handleContextMenu(e, folder)}
                         className={cn(
-                          'p-3.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between group',
+                          'p-3.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between group select-none',
                           isSelected
-                            ? 'border-blue-600 bg-blue-50/50 dark:bg-blue-950/40 shadow-xs ring-1 ring-blue-600'
+                            ? 'border-blue-600 bg-blue-50/60 dark:bg-blue-950/40 shadow-xs ring-1 ring-blue-600'
                             : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xs'
                         )}
                       >
-                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div
+                          className="flex items-center gap-3 min-w-0 flex-1"
+                          onClick={(e) => {
+                            // Single click on text or icon directly navigates if clicked directly
+                            e.stopPropagation();
+                            handleNavigateFolder(folder);
+                          }}
+                        >
                           <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 shrink-0 border border-blue-100/70 dark:border-blue-900/70">
                             <Folder className="h-4 w-4 fill-blue-600/20 dark:fill-blue-400/20" />
                           </div>
@@ -632,17 +841,13 @@ export const FilesView: React.FC<FilesViewProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1">
                           <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setRenamingItem({ id: folder.id, name: folder.name, isFolder: true });
-                              setRenameValue(folder.name);
-                            }}
-                            title="Rename folder"
+                            onClick={(e) => handleOpenActionMenu(e, folder)}
+                            title="Folder options"
                             className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                           >
-                            <Edit2 className="h-3.5 w-3.5" />
+                            <MoreVertical className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>
@@ -716,7 +921,12 @@ export const FilesView: React.FC<FilesViewProps> = ({
                         return (
                           <tr
                             key={file.id}
-                            onClick={() => setSelectedFile(isSelected ? null : file)}
+                            onClick={() => {
+                              setSelectedFile(isSelected ? null : file);
+                              setSelectedFolder(null);
+                            }}
+                            onDoubleClick={() => handlePreviewFile(file)}
+                            onContextMenu={(e) => handleContextMenu(e, file)}
                             className={cn(
                               'cursor-pointer transition-colors select-none group',
                               isSelected ? 'bg-blue-50/70 dark:bg-blue-950/50 text-slate-900 dark:text-slate-100' : 'hover:bg-slate-50/75 dark:hover:bg-slate-800/50'
@@ -748,6 +958,28 @@ export const FilesView: React.FC<FilesViewProps> = ({
                             <td className="py-2.5 text-slate-500 dark:text-slate-400">{formatDate(file.modifiedAt)}</td>
                             <td className="py-2.5 pr-4 text-right">
                               <div className="inline-flex items-center gap-1">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handlePreviewFile(file);
+                                  }}
+                                  className="p-1 text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+                                  title="Quick Preview"
+                                >
+                                  <Eye className="h-3.5 w-3.5" />
+                                </button>
+
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDownloadFile(file);
+                                  }}
+                                  className="p-1 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
+                                  title="Download"
+                                >
+                                  <Download className="h-3.5 w-3.5" />
+                                </button>
+
                                 {file.webUrl && (
                                   <a
                                     href={file.webUrl}
@@ -761,45 +993,13 @@ export const FilesView: React.FC<FilesViewProps> = ({
                                   </a>
                                 )}
 
-                                {activeView === 'trash' ? (
-                                  <>
-                                    <button
-                                      onClick={(e) => handleRestoreFile(file, e)}
-                                      title="Restore file"
-                                      className="p-1 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors cursor-pointer"
-                                    >
-                                      <RotateCcw className="h-3.5 w-3.5" />
-                                    </button>
-                                    <button
-                                      onClick={(e) => handlePermanentDeleteFile(file, e)}
-                                      title="Permanently delete"
-                                      className="p-1 text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </button>
-                                  </>
-                                ) : (
-                                  <>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setRenamingItem({ id: file.id, name: file.name, isFolder: false });
-                                        setRenameValue(file.name);
-                                      }}
-                                      title="Rename file"
-                                      className="p-1 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
-                                    >
-                                      <Edit2 className="h-3.5 w-3.5" />
-                                    </button>
-                                    <button
-                                      onClick={(e) => handleMoveFileToTrash(file, e)}
-                                      title="Move to trash"
-                                      className="p-1 text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </button>
-                                  </>
-                                )}
+                                <button
+                                  onClick={(e) => handleOpenActionMenu(e, file)}
+                                  title="More actions"
+                                  className="p-1 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
+                                >
+                                  <MoreVertical className="h-3.5 w-3.5" />
+                                </button>
                               </div>
                             </td>
                           </tr>
@@ -817,9 +1017,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
                     return (
                       <div
                         key={file.id}
-                        onClick={() => setSelectedFile(isSelected ? null : file)}
+                        onClick={() => {
+                          setSelectedFile(isSelected ? null : file);
+                          setSelectedFolder(null);
+                        }}
+                        onDoubleClick={() => handlePreviewFile(file)}
+                        onContextMenu={(e) => handleContextMenu(e, file)}
                         className={cn(
-                          'p-4 rounded-xl border bg-white dark:bg-slate-900 cursor-pointer transition-all space-y-3 relative group',
+                          'p-4 rounded-xl border bg-white dark:bg-slate-900 cursor-pointer transition-all space-y-3 relative group select-none',
                           isSelected
                             ? 'border-blue-600 ring-1 ring-blue-600 bg-blue-50/40 dark:bg-blue-950/40 shadow-xs'
                             : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xs'
@@ -854,41 +1059,39 @@ export const FilesView: React.FC<FilesViewProps> = ({
                         </div>
 
                         <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px]">
-                          <span className="truncate max-w-[140px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                          <span className="truncate max-w-[130px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
                             <HardDrive className="h-3 w-3 text-slate-400 dark:text-slate-500 shrink-0" />
                             {account ? account.email.split('@')[0] : file.storageAccountId}
                           </span>
 
                           <div className="flex items-center gap-1">
-                            {file.webUrl && (
-                              <a
-                                href={file.webUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(e) => e.stopPropagation()}
-                                className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 p-0.5 transition-colors"
-                                title="Open in Google Drive"
-                              >
-                                <ExternalLink className="h-3.5 w-3.5" />
-                              </a>
-                            )}
-                            {activeView === 'trash' ? (
-                              <button
-                                onClick={(e) => handleRestoreFile(file, e)}
-                                title="Restore"
-                                className="text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 p-0.5 transition-colors cursor-pointer"
-                              >
-                                <RotateCcw className="h-3.5 w-3.5" />
-                              </button>
-                            ) : (
-                              <button
-                                onClick={(e) => handleMoveFileToTrash(file, e)}
-                                title="Trash"
-                                className="text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 p-0.5 transition-colors cursor-pointer"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            )}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handlePreviewFile(file);
+                              }}
+                              className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 p-1 transition-colors cursor-pointer"
+                              title="Preview"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDownloadFile(file);
+                              }}
+                              className="text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 p-1 transition-colors cursor-pointer"
+                              title="Download"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={(e) => handleOpenActionMenu(e, file)}
+                              title="More"
+                              className="text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 p-1 transition-colors cursor-pointer"
+                            >
+                              <MoreVertical className="h-3.5 w-3.5" />
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -947,15 +1150,49 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
               {/* Drawer Actions */}
               <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handlePreviewFile(selectedFile)}
+                    className="flex-1 py-1.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 dark:bg-blue-950/70 dark:hover:bg-blue-900/80 dark:text-blue-300 dark:border-blue-800 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    <span>Preview</span>
+                  </button>
+                  <button
+                    onClick={() => handleDownloadFile(selectedFile)}
+                    className="flex-1 py-1.5 px-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                  >
+                    <Download className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+                    <span>Download</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setMoveCopyModal({ isOpen: true, mode: 'move', item: selectedFile })}
+                    className="flex-1 py-1.5 px-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                  >
+                    <FolderInput className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+                    <span>Move</span>
+                  </button>
+                  <button
+                    onClick={() => setMoveCopyModal({ isOpen: true, mode: 'copy', item: selectedFile })}
+                    className="flex-1 py-1.5 px-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                  >
+                    <Copy className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+
                 {selectedFile.webUrl && (
                   <a
                     href={selectedFile.webUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="w-full py-2 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 dark:bg-blue-950/70 dark:hover:bg-blue-900/80 dark:text-blue-300 dark:border-blue-800 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
+                    className="w-full py-1.5 px-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
                   >
                     <span>Open in Google Drive</span>
-                    <ExternalLink className="h-3.5 w-3.5" />
+                    <ExternalLink className="h-3.5 w-3.5 text-slate-400" />
                   </a>
                 )}
 
@@ -1115,6 +1352,68 @@ export const FilesView: React.FC<FilesViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* File Preview Modal */}
+      <FilePreviewModal
+        file={previewFile}
+        isOpen={!!previewFile}
+        onClose={() => setPreviewFile(null)}
+        onDownload={handleDownloadFile}
+      />
+
+      {/* Move / Copy Modal */}
+      <MoveCopyModal
+        isOpen={moveCopyModal.isOpen}
+        mode={moveCopyModal.mode}
+        item={moveCopyModal.item}
+        folders={rawFolders}
+        accounts={accounts}
+        onClose={() => setMoveCopyModal((prev) => ({ ...prev, isOpen: false }))}
+        onSuccess={() => {
+          fetchFilesystemData(currentFolderId);
+          onRefreshStoragePool?.();
+        }}
+      />
+
+      {/* Context Menu */}
+      <ContextMenu
+        isOpen={contextMenu.isOpen}
+        position={contextMenu.position}
+        target={contextMenu.target}
+        isTrashView={activeView === 'trash'}
+        onClose={() => setContextMenu((prev) => ({ ...prev, isOpen: false }))}
+        onPreview={(item) => handlePreviewFile(item as VirtualFile)}
+        onDownload={(item) => handleDownloadFile(item as VirtualFile)}
+        onRename={(item) => {
+          const isFolder = 'isFolder' in item && item.isFolder === true;
+          setRenamingItem({ id: item.id, name: item.name, isFolder });
+          setRenameValue(item.name);
+        }}
+        onMove={(item) => setMoveCopyModal({ isOpen: true, mode: 'move', item })}
+        onCopy={(item) => setMoveCopyModal({ isOpen: true, mode: 'copy', item })}
+        onStar={(item) => handleToggleStar(item as VirtualFile)}
+        onTrash={(item) => {
+          if ('isFolder' in item && item.isFolder) {
+            handleTrashFolder(item as VirtualFolder);
+          } else {
+            handleMoveFileToTrash(item as VirtualFile);
+          }
+        }}
+        onRestore={(item) => {
+          if ('isFolder' in item && item.isFolder) {
+            handleRestoreFolder(item as VirtualFolder);
+          } else {
+            handleRestoreFile(item as VirtualFile);
+          }
+        }}
+        onDeletePermanent={(item) => {
+          if ('isFolder' in item && item.isFolder) {
+            handlePermanentDeleteFolder(item as VirtualFolder);
+          } else {
+            handlePermanentDeleteFile(item as VirtualFile);
+          }
+        }}
+      />
     </div>
   );
 };

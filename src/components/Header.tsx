@@ -5,11 +5,13 @@
  * UniCloud Top Header Component
  */
 
-import React from 'react';
-import { Search, UploadCloud, Menu, LogIn, LogOut, Sun, Moon } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Search, UploadCloud, Menu, LogIn, LogOut, Sun, Moon, X, Command } from 'lucide-react';
 import { StoragePoolSummary } from '../types/account';
 import { UserPublicProfile } from '../types/auth';
+import { SearchResultItem } from '../types/filesystem';
 import { useTheme } from '../lib/theme';
+import { GlobalSearch } from './GlobalSearch';
 
 interface HeaderProps {
   onToggleSidebar?: () => void;
@@ -21,6 +23,8 @@ interface HeaderProps {
   onOpenAuth: () => void;
   onLogout: () => void;
   onNavigateProfile?: () => void;
+  onSelectSearchFile?: (file: SearchResultItem) => void;
+  onSelectSearchFolder?: (folderId: string, folderName: string) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -32,8 +36,34 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAuth,
   onLogout,
   onNavigateProfile,
+  onSelectSearchFile,
+  onSelectSearchFolder,
 }) => {
   const { theme, toggleTheme } = useTheme();
+  const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Global keyboard shortcut: Ctrl+K or Cmd+K or / to focus search
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        setIsSearchOpen(true);
+      } else if (e.key === '/' && document.activeElement !== searchInputRef.current) {
+        // Only if not already typing in another input/textarea
+        const tag = (document.activeElement?.tagName || '').toLowerCase();
+        if (tag !== 'input' && tag !== 'textarea') {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+          setIsSearchOpen(true);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const getInitials = () => {
     if (!user) return '??';
@@ -41,6 +71,12 @@ export const Header: React.FC<HeaderProps> = ({
       return user.displayName.slice(0, 2).toUpperCase();
     }
     return user.email.slice(0, 2).toUpperCase();
+  };
+
+  const handleClearSearch = () => {
+    onSearchChange('');
+    setIsSearchOpen(false);
+    searchInputRef.current?.focus();
   };
 
   return (
@@ -62,14 +98,53 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="relative w-full">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 dark:text-slate-500" />
           <input
+            ref={searchInputRef}
             id="global-search-input"
             type="text"
             value={searchQuery}
-            disabled
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search files and folders..."
-            className="w-full pl-9 pr-4 py-2 text-sm bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 placeholder:text-slate-400 dark:placeholder:text-slate-500 rounded-lg border border-slate-200 dark:border-slate-750 cursor-not-allowed transition-colors"
+            onFocus={() => setIsSearchOpen(true)}
+            onChange={(e) => {
+              onSearchChange(e.target.value);
+              setIsSearchOpen(true);
+            }}
+            placeholder="Search across all Google Drive accounts..."
+            className="w-full pl-9.5 pr-14 py-2 text-sm bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 rounded-xl border border-slate-200 dark:border-slate-750 focus:outline-none focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors shadow-2xs"
           />
+
+          <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
+            {searchQuery ? (
+              <button
+                type="button"
+                onClick={handleClearSearch}
+                className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-700/60 transition-colors cursor-pointer"
+                title="Clear search"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono text-slate-400 dark:text-slate-500 bg-slate-200/50 dark:bg-slate-750 rounded border border-slate-300/60 dark:border-slate-700 select-none pointer-events-none">
+                <Command className="h-2.5 w-2.5" />K
+              </kbd>
+            )}
+          </div>
+
+          {/* Connected Global Search Dropdown */}
+          {isSearchOpen && (
+            <GlobalSearch
+              searchQuery={searchQuery}
+              onSearchChange={onSearchChange}
+              isOpen={isSearchOpen}
+              onClose={() => setIsSearchOpen(false)}
+              onSelectFile={(file) => {
+                if (onSelectSearchFile) onSelectSearchFile(file);
+                setIsSearchOpen(false);
+              }}
+              onSelectFolder={(folderId, folderName) => {
+                if (onSelectSearchFolder) onSelectSearchFolder(folderId, folderName);
+                setIsSearchOpen(false);
+              }}
+            />
+          )}
         </div>
       </div>
 

@@ -124,10 +124,12 @@ export interface SearchOptions {
   includeFolders?: boolean;
 }
 
-export interface SearchResultItem extends VirtualFile {
+export interface SearchResultItem extends Omit<VirtualFile, 'isFolder'> {
+  isFolder: boolean;
   accountEmail: string;
   accountDisplayName?: string;
   accountAvatarUrl?: string;
+  location?: string;
 }
 
 export interface SearchResult {

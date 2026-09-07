@@ -438,6 +438,29 @@ export class FileService {
   }
 
   /**
+   * Retrieves file content Buffer or upstream redirectUrl for file download and preview.
+   */
+  async downloadFile(
+    userId: string,
+    fileId: string
+  ): Promise<{ file: VirtualFile; content?: Buffer; redirectUrl?: string }> {
+    const file = await this.getFileById(userId, fileId);
+
+    try {
+      const accessToken = await accountService.getValidAccessToken(userId, file.storageAccountId);
+      const provider = ProviderRegistry.get(file.provider);
+      const content = await provider.downloadFileContent(accessToken, file.providerFileId);
+      return { file, content };
+    } catch (err: any) {
+      logger.warn(`Direct download failed for file ${fileId}: ${err.message}`);
+      if (file.webUrl) {
+        return { file, redirectUrl: file.webUrl };
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Trashes a virtual folder and child items.
    */
   async trashFolder(userId: string, folderId: string): Promise<VirtualFolder> {
