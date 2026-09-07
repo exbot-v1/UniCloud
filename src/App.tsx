@@ -9,15 +9,13 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Sidebar, ActiveNavTab } from './components/Sidebar';
 import { Header } from './components/Header';
-import { DashboardView } from './components/DashboardView';
 import { FilesView } from './components/FilesView';
 import { AccountsView } from './components/AccountsView';
 import { SettingsView } from './components/SettingsView';
-import { SpecView } from './components/SpecView';
+import { ProfileView } from './components/ProfileView';
 import { UploadModal } from './components/UploadModal';
 import { AddAccountModal } from './components/AddAccountModal';
 import { AuthModal } from './components/AuthModal';
-import { DEMO_STORAGE_ACCOUNTS } from './data/mockData';
 import { calculateStoragePoolMetrics } from './lib/storageMetrics';
 import { authFetch, clearSessionToken } from './lib/api';
 import { StorageAccount, StoragePoolSummary } from './types/account';
@@ -25,7 +23,7 @@ import { UserPublicProfile } from './types/auth';
 import { VirtualFile } from './types/filesystem';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<ActiveNavTab>('dashboard');
+  const [activeTab, setActiveTab] = useState<ActiveNavTab>('files');
   const [searchQuery, setSearchQuery] = useState('');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -146,16 +144,8 @@ export default function App() {
     loadUserData();
   };
 
-  // Determine if using demo accounts (fallback when 0 real accounts connected)
-  const isUsingDemoData = useMemo(() => {
-    return !realAccounts || realAccounts.length === 0;
-  }, [realAccounts]);
-
   const accounts = useMemo(() => {
-    if (realAccounts && realAccounts.length > 0) {
-      return realAccounts;
-    }
-    return DEMO_STORAGE_ACCOUNTS;
+    return realAccounts || [];
   }, [realAccounts]);
 
   // Calculate storage pool summary dynamically or use backend response
@@ -178,7 +168,6 @@ export default function App() {
         poolSummary={poolSummary}
         onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
         className="hidden md:flex z-10"
-        isDemoData={isUsingDemoData}
       />
 
       {/* Navigation Drawer (Mobile) */}
@@ -200,7 +189,6 @@ export default function App() {
               setIsMobileSidebarOpen(false);
             }}
             className="relative z-10 w-72 bg-[#12161f] border-r border-[#262c36]"
-            isDemoData={isUsingDemoData}
           />
         </div>
       )}
@@ -217,22 +205,11 @@ export default function App() {
           user={user}
           onOpenAuth={() => setIsAuthModalOpen(true)}
           onLogout={handleLogout}
+          onNavigateProfile={() => setActiveTab('profile')}
         />
 
         {/* Scrollable Main View */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8">
-          {activeTab === 'dashboard' && (
-            <DashboardView
-              poolSummary={poolSummary}
-              recentFiles={realRecentFiles}
-              onOpenUpload={() => setIsUploadModalOpen(true)}
-              onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
-              onNavigateFiles={() => setActiveTab('files')}
-              onNavigateAccounts={() => setActiveTab('accounts')}
-              isDemoData={isUsingDemoData}
-            />
-          )}
-
           {activeTab === 'files' && (
             <FilesView
               accounts={realAccounts || []}
@@ -294,13 +271,20 @@ export default function App() {
               poolSummary={poolSummary}
               onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               onRefreshAccounts={loadUserData}
-              isDemoData={isUsingDemoData}
             />
           )}
 
-          {activeTab === 'spec' && <SpecView />}
-
           {activeTab === 'settings' && <SettingsView />}
+
+          {activeTab === 'profile' && (
+            <ProfileView
+              user={user}
+              accounts={accounts}
+              poolSummary={poolSummary}
+              onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
+              onLogout={handleLogout}
+            />
+          )}
         </main>
       </div>
 

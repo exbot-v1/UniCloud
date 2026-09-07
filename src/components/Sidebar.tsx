@@ -7,30 +7,28 @@
 
 import React from 'react';
 import {
-  LayoutDashboard,
   FolderSync,
   Clock,
   Star,
   Trash2,
   HardDrive,
-  BookOpen,
   Settings,
   Cloud,
   Layers,
   ChevronRight,
+  User,
 } from 'lucide-react';
 import { cn, formatBytes } from '../lib/formatters';
 import { StoragePoolSummary } from '../types/account';
 
 export type ActiveNavTab =
-  | 'dashboard'
   | 'files'
   | 'recent'
   | 'starred'
   | 'trash'
   | 'accounts'
-  | 'spec'
-  | 'settings';
+  | 'settings'
+  | 'profile';
 
 interface SidebarProps {
   activeTab: ActiveNavTab;
@@ -38,7 +36,6 @@ interface SidebarProps {
   poolSummary: StoragePoolSummary;
   className?: string;
   onOpenAddAccount: () => void;
-  isDemoData?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -47,17 +44,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   poolSummary,
   className,
   onOpenAddAccount,
-  isDemoData = false,
 }) => {
   const navItems = [
-    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'files' as const, label: 'My Files', icon: FolderSync },
     { id: 'recent' as const, label: 'Recent', icon: Clock },
     { id: 'starred' as const, label: 'Starred', icon: Star },
     { id: 'trash' as const, label: 'Trash', icon: Trash2 },
-    { id: 'accounts' as const, label: 'Storage Accounts', icon: HardDrive, badge: poolSummary.accounts.length },
-    { id: 'spec' as const, label: 'Architecture & Spec', icon: BookOpen, tag: 'Phase 2.1.1' },
+    { id: 'accounts' as const, label: 'Storage Accounts', icon: HardDrive, badge: poolSummary.accounts.length > 0 ? poolSummary.accounts.length : undefined },
     { id: 'settings' as const, label: 'Settings', icon: Settings },
+    { id: 'profile' as const, label: 'Profile', icon: User },
   ];
 
   return (
@@ -122,16 +117,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     {item.badge}
                   </span>
                 )}
-                {item.tag && (
-                  <span
-                    className={cn(
-                      'text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded',
-                      isActive ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-500/40' : 'bg-cyan-950/40 text-cyan-400 border border-cyan-800/40'
-                    )}
-                  >
-                    {item.tag}
-                  </span>
-                )}
               </button>
             );
           })}
@@ -163,7 +148,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           
           <div className="mt-2 pt-2 border-t border-[#262c36] text-[10px] text-slate-400 flex items-center justify-between">
-            <span>{poolSummary.accounts.length} {isDemoData ? 'Demo Accounts' : 'Connected Accounts'}</span>
+            <span>{poolSummary.accounts.length} {poolSummary.accounts.length === 1 ? 'Connected Account' : 'Connected Accounts'}</span>
             <span className="text-teal-400 font-medium">{formatBytes(poolSummary.totalFreeBytes)} free</span>
           </div>
         </div>
