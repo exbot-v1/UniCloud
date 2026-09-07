@@ -26,6 +26,7 @@ import {
   X,
   Loader2,
   AlertCircle,
+  AlertTriangle,
   Trash2,
   RotateCcw,
   Edit2,
@@ -41,6 +42,7 @@ import { VirtualFile, VirtualFolder, ViewMode } from '../types/filesystem';
 import { StorageAccount } from '../types/account';
 import { cn, formatBytes, formatDate } from '../lib/formatters';
 import { authFetch } from '../lib/api';
+import { useToast } from './Toast';
 import { FilePreviewModal } from './FilePreviewModal';
 import { MoveCopyModal } from './MoveCopyModal';
 import { ContextMenu } from './ContextMenu';
@@ -130,6 +132,16 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
   // File action menu popover state
   const [actionMenuId, setActionMenuId] = useState<string | null>(null);
+
+  // Global toast notifications
+  const { success, error, info } = useToast();
+
+  // Permanent delete confirmation dialog state
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{
+    item: VirtualFile | VirtualFolder;
+    isFolder: boolean;
+  } | null>(null);
+  const [isDeletingPermanent, setIsDeletingPermanent] = useState<boolean>(false);
 
   // Reset folder navigation when active tab changes
   useEffect(() => {
@@ -378,6 +390,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
           if (activeView === 'starred' && !updatedStarred) {
             setRealFiles((prev) => prev.filter((f) => f.id !== file.id));
           }
+          success(updatedStarred ? `Added "${file.name}" to starred.` : `Removed "${file.name}" from starred.`);
         }
       }
     } catch (err) {
@@ -395,9 +408,11 @@ export const FilesView: React.FC<FilesViewProps> = ({
         setRealFiles((prev) => prev.filter((f) => f.id !== file.id));
         if (selectedFile?.id === file.id) setSelectedFile(null);
         onRefreshStoragePool?.();
+        success(`Moved "${file.name}" to trash.`);
       }
     } catch (err) {
       console.error('Failed to move file to trash', err);
+      error(`Failed to move "${file.name}" to trash.`);
     }
   };
 
@@ -411,26 +426,19 @@ export const FilesView: React.FC<FilesViewProps> = ({
         setRealFiles((prev) => prev.filter((f) => f.id !== file.id));
         if (selectedFile?.id === file.id) setSelectedFile(null);
         onRefreshStoragePool?.();
+        success(`Restored "${file.name}" from trash.`);
       }
     } catch (err) {
       console.error('Failed to restore file', err);
+      error(`Failed to restore "${file.name}".`);
     }
   };
 
-  // Action: Permanently delete file
-  const handlePermanentDeleteFile = async (file: VirtualFile, e?: React.MouseEvent) => {
+  // Action: Request permanent delete file (opens confirmation)
+  const handlePermanentDeleteFile = (file: VirtualFile, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setActionMenuId(null);
-    try {
-      const res = await authFetch(`/api/files/${file.id}?permanent=true`, { method: 'DELETE' });
-      if (res.ok) {
-        setRealFiles((prev) => prev.filter((f) => f.id !== file.id));
-        if (selectedFile?.id === file.id) setSelectedFile(null);
-        onRefreshStoragePool?.();
-      }
-    } catch (err) {
-      console.error('Failed to permanently delete file', err);
-    }
+    setDeleteConfirmTarget({ item: file, isFolder: false });
   };
 
   // Action: Direct binary download
@@ -464,9 +472,11 @@ export const FilesView: React.FC<FilesViewProps> = ({
         setRealFolders((prev) => prev.filter((f) => f.id !== folder.id));
         if (selectedFolder?.id === folder.id) setSelectedFolder(null);
         onRefreshStoragePool?.();
+        success(`Moved folder "${folder.name}" to trash.`);
       }
     } catch (err) {
       console.error('Failed to trash folder', err);
+      error(`Failed to move folder "${folder.name}" to trash.`);
     }
   };
 
@@ -479,24 +489,52 @@ export const FilesView: React.FC<FilesViewProps> = ({
         setRealFolders((prev) => prev.filter((f) => f.id !== folder.id));
         if (selectedFolder?.id === folder.id) setSelectedFolder(null);
         onRefreshStoragePool?.();
+        success(`Restored folder "${folder.name}" from trash.`);
       }
     } catch (err) {
       console.error('Failed to restore folder', err);
+      error(`Failed to restore folder "${folder.name}".`);
     }
   };
 
-  // Action: Permanently delete virtual folder
-  const handlePermanentDeleteFolder = async (folder: VirtualFolder, e?: React.MouseEvent) => {
+  // Action: Request permanent delete virtual folder (opens confirmation)
+  const handlePermanentDeleteFolder = (folder: VirtualFolder, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    setActionMenuId(null);
+    setDeleteConfirmTarget({ item: folder, isFolder: true });
+  };
+
+  // Execute permanent delete after user confirmation
+  const handleConfirmPermanentDelete = async () => {
+    if (!deleteConfirmTarget || isDeletingPermanent) return;
+    setIsDeletingPermanent(true);
+
     try {
-      const res = await authFetch(`/api/folders/${folder.id}?permanent=true`, { method: 'DELETE' });
+      const { item, isFolder } = deleteConfirmTarget;
+      const endpoint = isFolder
+        ? `/api/folders/${item.id}?permanent=true`
+        : `/api/files/${item.id}?permanent=true`;
+
+      const res = await authFetch(endpoint, { method: 'DELETE' });
       if (res.ok) {
-        setRealFolders((prev) => prev.filter((f) => f.id !== folder.id));
-        if (selectedFolder?.id === folder.id) setSelectedFolder(null);
+        if (isFolder) {
+          setRealFolders((prev) => prev.filter((f) => f.id !== item.id));
+          if (selectedFolder?.id === item.id) setSelectedFolder(null);
+        } else {
+          setRealFiles((prev) => prev.filter((f) => f.id !== item.id));
+          if (selectedFile?.id === item.id) setSelectedFile(null);
+        }
         onRefreshStoragePool?.();
+        success(`Permanently deleted "${item.name}".`);
+        setDeleteConfirmTarget(null);
+      } else {
+        const json = await res.json().catch(() => ({}));
+        error(json.error?.message || `Failed to delete "${item.name}".`);
       }
-    } catch (err) {
-      console.error('Failed to permanently delete folder', err);
+    } catch (err: any) {
+      error(err.message || 'Error executing permanent deletion.');
+    } finally {
+      setIsDeletingPermanent(false);
     }
   };
 
@@ -572,6 +610,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
               setSelectedFile(json.data);
             }
           }
+          success(`Renamed to "${renameValue.trim()}".`);
         }
       }
     } catch (err) {
@@ -606,6 +645,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
           setRealFolders((prev) => [...prev, json.data]);
           setNewFolderName('');
           setIsCreatingFolder(false);
+          success(`Created folder "${newFolderName.trim()}".`);
         }
       }
     } catch (err) {
@@ -768,11 +808,33 @@ export const FilesView: React.FC<FilesViewProps> = ({
         </div>
       </div>
 
-      {/* Loading State */}
+      {/* Loading Skeleton State */}
       {isLoading && (
-        <div className="p-16 text-center rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs">
-          <Loader2 className="h-6 w-6 text-blue-600 dark:text-blue-400 animate-spin mx-auto mb-2" />
-          <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Loading files...</p>
+        <div className="space-y-4 animate-pulse">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {[1, 2, 3, 4].map((i) => (
+              <div
+                key={i}
+                className="h-16 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-3 flex items-center gap-3"
+              >
+                <div className="h-9 w-9 bg-slate-200 dark:bg-slate-800 rounded-lg shrink-0" />
+                <div className="space-y-1.5 flex-1">
+                  <div className="h-3.5 bg-slate-200 dark:bg-slate-800 rounded-sm w-3/4" />
+                  <div className="h-2.5 bg-slate-100 dark:bg-slate-850 rounded-sm w-1/2" />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="h-10 bg-slate-50 dark:bg-slate-850/60 rounded-lg flex items-center px-3 gap-4">
+                <div className="h-4 w-4 bg-slate-200 dark:bg-slate-700 rounded-sm shrink-0" />
+                <div className="h-3 bg-slate-200 dark:bg-slate-700 rounded-sm flex-1 max-w-xs" />
+                <div className="h-3 bg-slate-100 dark:bg-slate-800 rounded-sm w-20 hidden sm:block" />
+                <div className="h-3 bg-slate-100 dark:bg-slate-800 rounded-sm w-28 hidden sm:block" />
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1372,8 +1434,58 @@ export const FilesView: React.FC<FilesViewProps> = ({
         onSuccess={() => {
           fetchFilesystemData(currentFolderId);
           onRefreshStoragePool?.();
+          success(moveCopyModal.mode === 'move' ? 'Item moved successfully.' : 'Item copied successfully.');
         }}
       />
+
+      {/* Permanent Deletion Confirmation Modal */}
+      {deleteConfirmTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 dark:bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 text-slate-900 dark:text-slate-100">
+            <div className="flex items-start gap-3.5">
+              <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/50 shrink-0">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="space-y-1.5 flex-1 min-w-0">
+                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  Delete Permanently?
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                  Are you sure you want to permanently delete <strong className="text-slate-900 dark:text-slate-100">{deleteConfirmTarget.item.name}</strong>?
+                </p>
+                <div className="p-3 bg-rose-50/50 dark:bg-rose-950/30 rounded-lg border border-rose-100 dark:border-rose-900/50 text-[11px] text-rose-700 dark:text-rose-300 space-y-1">
+                  <p className="font-semibold">This action cannot be undone.</p>
+                  <p>
+                    {deleteConfirmTarget.isFolder
+                      ? 'The virtual folder and any contained items will be deleted permanently.'
+                      : 'The file will be erased forever from its Google Drive storage account.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingPermanent}
+                onClick={() => setDeleteConfirmTarget(null)}
+                className="px-4 py-2 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-medium border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingPermanent}
+                onClick={handleConfirmPermanentDelete}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-medium shadow-xs transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {isDeletingPermanent && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>{isDeletingPermanent ? 'Deleting...' : 'Delete Forever'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Context Menu */}
       <ContextMenu

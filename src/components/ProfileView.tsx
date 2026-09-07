@@ -3,11 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  * 
  * UniCloud User Profile View
- * Displays authenticated user information, aggregate storage pool summary,
- * connected Google Drive accounts, per-account storage usage, and account actions.
+ * Displays authenticated user identity, aggregate storage capacity metrics,
+ * contributing Google Drive accounts, and session management.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   User as UserIcon,
   Mail,
@@ -21,6 +21,7 @@ import {
   Layers,
   ShieldCheck,
   ExternalLink,
+  Loader2,
 } from 'lucide-react';
 import { UserPublicProfile } from '../types/auth';
 import { StorageAccount, StoragePoolSummary, AccountStatus } from '../types/account';
@@ -41,6 +42,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   onOpenAddAccount,
   onLogout,
 }) => {
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
   const getInitials = () => {
     if (!user) return '??';
     if (user.displayName) {
@@ -49,20 +53,27 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     return user.email.slice(0, 2).toUpperCase();
   };
 
+  const handleConfirmLogout = () => {
+    setIsLoggingOut(true);
+    onLogout();
+  };
+
   return (
     <div id="profile-view" className="space-y-6 max-w-5xl mx-auto pb-12">
-      {/* Page Title */}
+      {/* Page Title & Sign Out */}
       <div className="border-b border-slate-200 dark:border-slate-800 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">User Profile &amp; Account</h1>
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+            Profile &amp; Account Overview
+          </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Manage your personal profile, connected Google Drive accounts, and storage capacity.
+            Manage your personal profile, authenticated session, and unified storage pool.
           </p>
         </div>
         <button
-          onClick={onLogout}
+          onClick={() => setShowLogoutConfirm(true)}
           id="btn-profile-logout"
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 bg-white dark:bg-slate-900 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-slate-200 dark:border-slate-700 hover:border-rose-200 dark:hover:border-rose-800 shadow-2xs transition-all self-start sm:self-auto cursor-pointer"
+          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 bg-white dark:bg-slate-900 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-slate-200 dark:border-slate-800 hover:border-rose-200 dark:hover:border-rose-900/60 shadow-2xs transition-all self-start sm:self-auto cursor-pointer"
         >
           <LogOut className="h-4 w-4 text-rose-500" />
           <span>Sign Out</span>
@@ -70,7 +81,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       </div>
 
       {/* User Information Card */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs">
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xs">
         <div className="flex flex-col sm:flex-row sm:items-center gap-5">
           <div className="h-14 w-14 rounded-full bg-blue-50 dark:bg-blue-950/70 border border-blue-100 dark:border-blue-900 flex items-center justify-center text-blue-700 dark:text-blue-300 text-lg font-bold shadow-2xs shrink-0">
             {getInitials()}
@@ -100,15 +111,19 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       </div>
 
       {/* Aggregate Storage Pool Summary */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs space-y-4">
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xs space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 border border-blue-100 dark:border-blue-900 text-blue-600 dark:text-blue-400">
               <Layers className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Unified Storage Pool</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Combined capacity across all connected storage accounts</p>
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Unified Storage Capacity
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Combined capacity aggregated across {accounts.length} connected Google Drive {accounts.length === 1 ? 'account' : 'accounts'}
+              </p>
             </div>
           </div>
           <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
@@ -130,37 +145,39 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
         </div>
 
-        {/* Breakdown Metric Tiles */}
+        {/* Metric Breakdown */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
-          <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+          <div className="p-4 rounded-lg bg-slate-50/70 dark:bg-slate-850/70 border border-slate-200 dark:border-slate-800">
             <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Connected Accounts</p>
             <p className="text-xl font-bold text-slate-900 dark:text-slate-100 mt-1">{accounts.length}</p>
-            <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">Google Drive accounts</p>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">Google Drive pools</p>
           </div>
-          <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
-            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Used Storage</p>
+          <div className="p-4 rounded-lg bg-slate-50/70 dark:bg-slate-850/70 border border-slate-200 dark:border-slate-800">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Consumed Space</p>
             <p className="text-xl font-bold text-slate-900 dark:text-slate-100 mt-1">{formatBytes(poolSummary.totalUsedBytes)}</p>
             <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">{poolSummary.usagePercentage}% of pool</p>
           </div>
-          <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+          <div className="p-4 rounded-lg bg-slate-50/70 dark:bg-slate-850/70 border border-slate-200 dark:border-slate-800">
             <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Available Headroom</p>
-            <p className="text-xl font-bold text-emerald-700 dark:text-emerald-400 mt-1">{formatBytes(poolSummary.totalFreeBytes)}</p>
-            <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">Ready for file storage</p>
+            <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400 mt-1">{formatBytes(poolSummary.totalFreeBytes)}</p>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">Ready for file uploads</p>
           </div>
         </div>
       </div>
 
-      {/* Connected Google Drive Accounts */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs space-y-4">
+      {/* Connected Google Drive Accounts Summary */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-2.5">
             <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 border border-blue-100 dark:border-blue-900 text-blue-600 dark:text-blue-400">
               <HardDrive className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Connected Accounts</h3>
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Contributing Accounts
+              </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                {accounts.length} {accounts.length === 1 ? 'account' : 'accounts'} contributing physical storage
+                Individual Google Drive storage quotas
               </p>
             </div>
           </div>
@@ -178,9 +195,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           <div className="p-8 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-850/60 space-y-3">
             <HardDrive className="h-8 w-8 text-slate-400 dark:text-slate-500 mx-auto" />
             <div>
-              <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">No Storage Accounts Connected</p>
+              <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                No Accounts Connected
+              </p>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm mx-auto">
-                Connect your Google Drive accounts to start pooling storage capacity.
+                Connect your Google Drive accounts to expand your available pool capacity.
               </p>
             </div>
             <button
@@ -195,10 +214,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           <div className="space-y-3">
             {accounts.map((account) => {
               const isFull = account.quota.usagePercentage > 90;
+              const isEnabled = account.isEnabled !== false;
+
               return (
                 <div
                   key={account.id}
-                  className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-50/70 dark:hover:bg-slate-800/60 transition-all space-y-3"
+                  className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3"
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="flex items-center gap-3 min-w-0">
@@ -218,29 +239,37 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                         <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
                           {account.displayName || account.email}
                         </p>
-                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{account.email}</p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                          {account.email}
+                        </p>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2 self-start sm:self-auto">
-                      <span
-                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${
-                          account.status === AccountStatus.ACTIVE
-                            ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                            : account.status === AccountStatus.TOKEN_EXPIRED
-                            ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                            : 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
-                        }`}
-                      >
-                        {account.status === AccountStatus.ACTIVE && <CheckCircle2 className="h-3 w-3" />}
-                        {account.status === AccountStatus.TOKEN_EXPIRED && <Clock className="h-3 w-3" />}
-                        {account.status === AccountStatus.ERROR && <AlertTriangle className="h-3 w-3" />}
-                        {account.status === AccountStatus.ACTIVE ? 'Connected' : account.status}
-                      </span>
+                      {!isEnabled ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium border bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700">
+                          Paused
+                        </span>
+                      ) : (
+                        <span
+                          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${
+                            account.status === AccountStatus.ACTIVE
+                              ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                              : account.status === AccountStatus.TOKEN_EXPIRED
+                              ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                              : 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                          }`}
+                        >
+                          {account.status === AccountStatus.ACTIVE && <CheckCircle2 className="h-3 w-3" />}
+                          {account.status === AccountStatus.TOKEN_EXPIRED && <Clock className="h-3 w-3" />}
+                          {account.status === AccountStatus.ERROR && <AlertTriangle className="h-3 w-3" />}
+                          {account.status === AccountStatus.ACTIVE ? 'Connected' : account.status}
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  {/* Quota Progress for account */}
+                  {/* Quota Progress */}
                   <div className="space-y-1.5">
                     <div className="flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
                       <span>
@@ -271,6 +300,51 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Logout Confirmation Dialog */}
+      {showLogoutConfirm && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 dark:bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 text-slate-900 dark:text-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/50">
+                <LogOut className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  Sign Out?
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Are you sure you want to end your session?
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+              Your connected Google Drive accounts and virtual files will remain safely configured in your account.
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isLoggingOut}
+                onClick={() => setShowLogoutConfirm(false)}
+                className="px-4 py-2 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-medium border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isLoggingOut}
+                onClick={handleConfirmLogout}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-medium shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isLoggingOut && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>{isLoggingOut ? 'Signing out...' : 'Sign Out'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

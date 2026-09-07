@@ -2,10 +2,9 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * UniCloud Storage Accounts Management View (Phase 2 Upgrade)
- * 
- * Visualizes live connected Google Drive accounts, real Drive v3 quotas,
- * interactive metadata synchronization, and account disconnection.
+ * UniCloud Storage Accounts Management View
+ * Production-quality account manager for Google Drive accounts comprising
+ * the unified virtual storage pool.
  */
 
 import React, { useState } from 'react';
@@ -23,65 +22,105 @@ import {
   Loader2,
   AlertCircle,
   ExternalLink,
+  Power,
+  ToggleLeft,
+  ToggleRight,
+  Layers,
+  Search,
+  Check,
 } from 'lucide-react';
 import { StorageAccount, StoragePoolSummary, AccountStatus } from '../types/account';
-import { formatBytes, formatDate } from '../lib/formatters';
+import { formatBytes, formatDate, formatRelativeTime } from '../lib/formatters';
 import { authFetch } from '../lib/api';
+import { useToast } from './Toast';
 
 interface AccountsViewProps {
   poolSummary: StoragePoolSummary;
   onOpenAddAccount: () => void;
   onRefreshAccounts?: () => Promise<void> | void;
+  isLoading?: boolean;
 }
 
 export const AccountsView: React.FC<AccountsViewProps> = ({
   poolSummary,
   onOpenAddAccount,
   onRefreshAccounts,
+  isLoading = false,
 }) => {
+  const { success, error, info } = useToast();
   const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null);
+  const [togglingAccountId, setTogglingAccountId] = useState<string | null>(null);
   const [disconnectModalAccount, setDisconnectModalAccount] = useState<StorageAccount | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
-  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [searchFilter, setSearchFilter] = useState('');
+  const [isRefreshingAll, setIsRefreshingAll] = useState(false);
 
-  const handleSync = async (account: StorageAccount) => {
+  // Sync an individual account
+  const handleSync = async (account: StorageAccount, mode: 'delta' | 'full' = 'delta') => {
+    if (syncingAccountId) return;
     setSyncingAccountId(account.id);
-    setActionNotice(null);
 
     try {
       const res = await authFetch(`/api/accounts/${account.id}/sync`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
       });
 
       const json = await res.json();
       if (res.ok && json.success) {
-        setActionNotice({
-          type: 'success',
-          message: `Successfully synced ${account.email}. Discovered ${json.data?.syncResult?.filesDiscovered ?? 0} files.`,
-        });
+        const discovered = json.data?.syncResult?.filesDiscovered ?? 0;
+        success(`Synchronized ${account.email}. Discovered ${discovered} items.`);
         if (onRefreshAccounts) {
           await onRefreshAccounts();
         }
       } else {
-        setActionNotice({
-          type: 'error',
-          message: json.error?.message || `Failed to synchronize ${account.email}`,
-        });
+        error(json.error?.message || `Failed to synchronize ${account.email}`);
       }
     } catch (err: any) {
-      setActionNotice({
-        type: 'error',
-        message: err.message || `Network error synchronizing ${account.email}`,
-      });
+      error(err.message || `Network error synchronizing ${account.email}`);
     } finally {
       setSyncingAccountId(null);
     }
   };
 
+  // Toggle enabled/disabled state of an account
+  const handleToggleEnabled = async (account: StorageAccount) => {
+    if (togglingAccountId) return;
+    setTogglingAccountId(account.id);
+    const newEnabledState = account.isEnabled === false ? true : false;
+
+    try {
+      const res = await authFetch(`/api/accounts/${account.id}/enable`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isEnabled: newEnabledState }),
+      });
+
+      const json = await res.json();
+      if (res.ok && json.success) {
+        if (newEnabledState) {
+          success(`Account ${account.email} enabled for uploads.`);
+        } else {
+          info(`Account ${account.email} paused. No new uploads will be routed here.`);
+        }
+        if (onRefreshAccounts) {
+          await onRefreshAccounts();
+        }
+      } else {
+        error(json.error?.message || `Failed to update account status.`);
+      }
+    } catch (err: any) {
+      error(err.message || `Network error updating account.`);
+    } finally {
+      setTogglingAccountId(null);
+    }
+  };
+
+  // Disconnect an account with confirmation
   const handleConfirmDisconnect = async () => {
-    if (!disconnectModalAccount) return;
+    if (!disconnectModalAccount || disconnecting) return;
     setDisconnecting(true);
-    setActionNotice(null);
 
     try {
       const res = await authFetch(`/api/accounts/${disconnectModalAccount.id}`, {
@@ -90,108 +129,183 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
 
       const json = await res.json();
       if (res.ok && json.success) {
-        setActionNotice({
-          type: 'success',
-          message: `Disconnected ${disconnectModalAccount.email} from your virtual storage pool.`,
-        });
+        success(`Disconnected ${disconnectModalAccount.email} from storage pool.`);
         setDisconnectModalAccount(null);
         if (onRefreshAccounts) {
           await onRefreshAccounts();
         }
       } else {
-        setActionNotice({
-          type: 'error',
-          message: json.error?.message || `Failed to disconnect account`,
-        });
+        error(json.error?.message || `Failed to disconnect account.`);
       }
     } catch (err: any) {
-      setActionNotice({
-        type: 'error',
-        message: err.message || `Network error disconnecting account`,
-      });
+      error(err.message || `Network error disconnecting account.`);
     } finally {
       setDisconnecting(false);
     }
   };
 
+  // Refresh all accounts
+  const handleRefreshAll = async () => {
+    if (isRefreshingAll) return;
+    setIsRefreshingAll(true);
+    try {
+      if (onRefreshAccounts) {
+        await onRefreshAccounts();
+        success('Storage accounts and quotas refreshed.');
+      }
+    } catch (err: any) {
+      error('Failed to refresh accounts.');
+    } finally {
+      setIsRefreshingAll(false);
+    }
+  };
+
+  // Filter accounts by search query
+  const filteredAccounts = (poolSummary.accounts || []).filter((acc) => {
+    if (!searchFilter.trim()) return true;
+    const term = searchFilter.toLowerCase();
+    return (
+      acc.email.toLowerCase().includes(term) ||
+      (acc.displayName && acc.displayName.toLowerCase().includes(term))
+    );
+  });
+
+  const activeAccountsCount = poolSummary.accounts.filter(
+    (a) => a.isEnabled !== false && a.status === AccountStatus.ACTIVE
+  ).length;
+
   return (
     <div id="accounts-view" className="space-y-6 max-w-7xl mx-auto pb-12">
-      {/* Top Banner & Action */}
+      {/* Top Header & Action Controls */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Connected Storage Accounts</h1>
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+            Connected Storage Accounts
+          </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Manage Google Drive accounts comprising your unified storage pool.
+            Manage the Google Drive accounts comprising your unified virtual storage pool.
           </p>
         </div>
-        <button
-          id="btn-add-account-main"
-          onClick={onOpenAddAccount}
-          className="inline-flex items-center gap-2 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium shadow-xs transition-colors cursor-pointer"
-        >
-          <Plus className="h-4 w-4" />
-          <span>Connect Google Drive</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {poolSummary.accounts.length > 0 && (
+            <button
+              id="btn-refresh-accounts"
+              onClick={handleRefreshAll}
+              disabled={isRefreshingAll}
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium transition-colors shadow-2xs cursor-pointer disabled:opacity-50"
+              title="Refresh all account quotas"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isRefreshingAll ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Refresh Quotas</span>
+            </button>
+          )}
+          <button
+            id="btn-add-account-main"
+            onClick={onOpenAddAccount}
+            className="inline-flex items-center gap-2 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium shadow-xs transition-colors cursor-pointer shrink-0"
+          >
+            <Plus className="h-4 w-4" />
+            <span>Connect Google Drive</span>
+          </button>
+        </div>
       </div>
 
       {/* Aggregate Storage Pool Summary Bar */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-2xs grid grid-cols-1 sm:grid-cols-4 gap-4">
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-2xs grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div>
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Connected Accounts</p>
-          <p className="text-xl font-semibold text-slate-900 dark:text-slate-100 mt-0.5">{poolSummary.totalAccounts}</p>
-          <p className="text-[11px] text-slate-400 dark:text-slate-500">Active Google Drive pools</p>
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Total Accounts</p>
+          <div className="flex items-baseline gap-1.5 mt-0.5">
+            <span className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+              {poolSummary.totalAccounts}
+            </span>
+            <span className="text-[11px] text-slate-400 dark:text-slate-500">
+              ({activeAccountsCount} active)
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">Google Drive pools</p>
         </div>
+
         <div>
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Total Pool Capacity</p>
-          <p className="text-xl font-semibold text-slate-900 dark:text-slate-100 mt-0.5">{formatBytes(poolSummary.totalCapacityBytes)}</p>
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Pool Capacity</p>
+          <p className="text-xl font-semibold text-slate-900 dark:text-slate-100 mt-0.5">
+            {formatBytes(poolSummary.totalCapacityBytes)}
+          </p>
           <p className="text-[11px] text-slate-400 dark:text-slate-500">Aggregate storage</p>
         </div>
+
         <div>
           <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Total Consumed</p>
-          <p className="text-xl font-semibold text-slate-900 dark:text-slate-100 mt-0.5">{formatBytes(poolSummary.totalUsedBytes)}</p>
-          <p className="text-[11px] text-slate-400 dark:text-slate-500">{poolSummary.usagePercentage}% utilized</p>
+          <p className="text-xl font-semibold text-slate-900 dark:text-slate-100 mt-0.5">
+            {formatBytes(poolSummary.totalUsedBytes)}
+          </p>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">
+            {poolSummary.usagePercentage}% utilized
+          </p>
         </div>
+
         <div>
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Available Free Space</p>
-          <p className="text-xl font-semibold text-slate-900 dark:text-slate-100 mt-0.5">{formatBytes(poolSummary.totalFreeBytes)}</p>
-          <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">Ready for allocation</p>
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Available Headroom</p>
+          <p className="text-xl font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">
+            {formatBytes(poolSummary.totalFreeBytes)}
+          </p>
+          <p className="text-[11px] text-emerald-600 dark:text-emerald-500 font-medium">
+            Ready for allocation
+          </p>
         </div>
       </div>
 
-      {/* Action Notification */}
-      {actionNotice && (
-        <div
-          className={`flex items-center justify-between p-3 rounded-lg border text-xs ${
-            actionNotice.type === 'success'
-              ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
-              : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            {actionNotice.type === 'success' ? (
-              <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            ) : (
-              <AlertCircle className="h-4 w-4 text-rose-600 dark:text-rose-400 shrink-0" />
-            )}
-            <span>{actionNotice.message}</span>
+      {/* Account Search & Filter Bar (when multiple accounts exist) */}
+      {poolSummary.accounts.length > 2 && (
+        <div className="flex items-center justify-between gap-3">
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+            <input
+              type="text"
+              value={searchFilter}
+              onChange={(e) => setSearchFilter(e.target.value)}
+              placeholder="Filter by account email or name..."
+              className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-hidden focus:ring-1 focus:ring-blue-500"
+            />
           </div>
-          <button
-            onClick={() => setActionNotice(null)}
-            className="text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 text-xs font-medium ml-4 cursor-pointer"
-          >
-            Dismiss
-          </button>
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            Showing {filteredAccounts.length} of {poolSummary.accounts.length}
+          </span>
         </div>
       )}
 
-      {/* Account Cards Grid or Empty State */}
-      {poolSummary.accounts.length === 0 ? (
+      {/* Loading Skeletons */}
+      {isLoading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-pulse">
+          {[1, 2, 3].map((n) => (
+            <div
+              key={n}
+              className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4 shadow-2xs"
+            >
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-lg bg-slate-200 dark:bg-slate-800" />
+                <div className="space-y-2 flex-1">
+                  <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded-sm w-3/4" />
+                  <div className="h-3 bg-slate-100 dark:bg-slate-850 rounded-sm w-1/2" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="h-2 bg-slate-100 dark:bg-slate-800 rounded-full w-full" />
+                <div className="h-3 bg-slate-100 dark:bg-slate-850 rounded-sm w-1/3" />
+              </div>
+              <div className="h-8 bg-slate-100 dark:bg-slate-800 rounded-lg w-full" />
+            </div>
+          ))}
+        </div>
+      ) : poolSummary.accounts.length === 0 ? (
+        /* Empty State */
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-12 text-center max-w-md mx-auto space-y-4 my-8 shadow-xs">
           <div className="h-12 w-12 rounded-xl bg-blue-50 dark:bg-blue-950/70 border border-blue-100 dark:border-blue-900 flex items-center justify-center mx-auto text-blue-600 dark:text-blue-400">
             <HardDrive className="h-6 w-6" />
           </div>
           <div className="space-y-1">
-            <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">No Connected Storage Accounts</h3>
+            <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+              No Connected Storage Accounts
+            </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed">
               Your unified storage pool currently has 0 connected accounts. Connect a Google Drive account to start pooling capacity.
             </p>
@@ -205,19 +319,32 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
           </button>
         </div>
       ) : (
+        /* Account Cards Grid */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {poolSummary.accounts.map((account: StorageAccount, index: number) => {
+          {filteredAccounts.map((account: StorageAccount, index: number) => {
             const isFull = account.quota.usagePercentage > 90;
             const isSyncing = syncingAccountId === account.id;
+            const isToggling = togglingAccountId === account.id;
+            const isEnabled = account.isEnabled !== false;
+            const isTokenExpired = account.status === AccountStatus.TOKEN_EXPIRED;
+            const isError = account.status === AccountStatus.ERROR || account.status === AccountStatus.REVOKED;
 
             return (
               <div
                 key={account.id}
-                className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-2xs hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xs transition-all flex flex-col justify-between space-y-4"
+                className={`rounded-xl border bg-white dark:bg-slate-900 p-5 shadow-2xs hover:shadow-xs transition-all flex flex-col justify-between space-y-4 ${
+                  !isEnabled
+                    ? 'border-slate-200 dark:border-slate-800/60 opacity-85 bg-slate-50/50 dark:bg-slate-900/60'
+                    : isError
+                    ? 'border-rose-300 dark:border-rose-900/50'
+                    : isTokenExpired
+                    ? 'border-amber-300 dark:border-amber-900/50'
+                    : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                }`}
               >
                 <div>
-                  {/* Account Header */}
-                  <div className="flex items-start justify-between gap-3">
+                  {/* Account Header: Identity & Status Badge */}
+                  <div className="flex items-start justify-between gap-2.5">
                     <div className="flex items-center gap-3 min-w-0">
                       {account.avatarUrl ? (
                         <img
@@ -232,29 +359,60 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                         </div>
                       )}
                       <div className="min-w-0">
-                        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
-                          {account.displayName || account.email}
-                        </h3>
-                        <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{account.email}</p>
+                        <div className="flex items-center gap-1.5">
+                          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                            {account.displayName || account.email.split('@')[0]}
+                          </h3>
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 truncate" title={account.email}>
+                          {account.email}
+                        </p>
                       </div>
                     </div>
-                    <span
-                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium border shrink-0 ${
-                        account.status === AccountStatus.ACTIVE
-                          ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                          : account.status === AccountStatus.TOKEN_EXPIRED
-                          ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                          : 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
-                      }`}
-                    >
-                      {account.status === AccountStatus.ACTIVE && <CheckCircle2 className="h-3 w-3" />}
-                      {account.status === AccountStatus.TOKEN_EXPIRED && <Clock className="h-3 w-3" />}
-                      {account.status === AccountStatus.ERROR && <AlertTriangle className="h-3 w-3" />}
-                      {account.status}
-                    </span>
+
+                    {/* Status Badge */}
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      {!isEnabled ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium border bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700">
+                          <Power className="h-3 w-3 text-slate-400" />
+                          Paused
+                        </span>
+                      ) : isError ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium border bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800">
+                          <AlertTriangle className="h-3 w-3" />
+                          Revoked
+                        </span>
+                      ) : isTokenExpired ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium border bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800">
+                          <Clock className="h-3 w-3" />
+                          Reauth Needed
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium border bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800">
+                          <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                          Active
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Quota Progress */}
+                  {/* Warning banner for degraded accounts */}
+                  {(isTokenExpired || isError) && (
+                    <div className="mt-3 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-amber-900 dark:text-amber-200 text-xs flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <AlertCircle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                        <span className="truncate">Credentials need renewal</span>
+                      </div>
+                      <button
+                        onClick={onOpenAddAccount}
+                        className="font-semibold underline hover:no-underline text-blue-600 dark:text-blue-400 shrink-0 cursor-pointer"
+                      >
+                        Reconnect
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Quota Progress Bar */}
                   <div className="mt-4 space-y-1.5">
                     <div className="flex justify-between text-xs">
                       <span className="text-slate-500 dark:text-slate-400">Storage Used</span>
@@ -266,48 +424,89 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                     <div className="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all duration-300 ${
-                          isFull ? 'bg-amber-500' : 'bg-blue-600 dark:bg-blue-500'
+                          !isEnabled
+                            ? 'bg-slate-400 dark:bg-slate-600'
+                            : isFull
+                            ? 'bg-amber-500'
+                            : 'bg-blue-600 dark:bg-blue-500'
                         }`}
                         style={{ width: `${Math.min(100, account.quota.usagePercentage)}%` }}
                       />
                     </div>
 
                     <div className="flex justify-between text-[11px] text-slate-400 dark:text-slate-500">
-                      <span>{account.quota.usagePercentage}% used</span>
+                      <span>{account.quota.usagePercentage}% utilized</span>
                       <span className="text-slate-600 dark:text-slate-300 font-medium">
                         {formatBytes(account.quota.freeBytes)} free
                       </span>
                     </div>
                   </div>
 
-                  {/* Account Metadata */}
-                  <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-                    <div className="flex justify-between">
+                  {/* Account Metadata: Provider & Last Synced */}
+                  <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                    <div className="flex justify-between items-center">
                       <span>Provider</span>
-                      <span className="font-medium text-slate-700 dark:text-slate-300">Google Drive API v3</span>
+                      <span className="font-medium text-slate-700 dark:text-slate-300">
+                        Google Drive
+                      </span>
                     </div>
-                    <div className="flex justify-between">
-                      <span>Last Synced</span>
-                      <span className="text-slate-700 dark:text-slate-300">{formatDate(account.lastSyncedAt || account.updatedAt)}</span>
+                    <div className="flex justify-between items-center">
+                      <span>Last Synchronized</span>
+                      <span
+                        className="text-slate-700 dark:text-slate-300 font-medium"
+                        title={account.lastSyncedAt ? formatDate(account.lastSyncedAt) : undefined}
+                      >
+                        {account.lastSyncedAt ? formatRelativeTime(account.lastSyncedAt) : 'Pending initial sync'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span>Upload Routing</span>
+                      <span className={isEnabled ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-slate-400'}>
+                        {isEnabled ? 'Enabled (Eligible)' : 'Disabled (Paused)'}
+                      </span>
                     </div>
                   </div>
                 </div>
 
-                {/* Actions */}
+                {/* Actions Toolbar */}
                 <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                  {/* Sync Button */}
                   <button
-                    disabled={isSyncing}
+                    disabled={isSyncing || !isEnabled}
                     onClick={() => handleSync(account)}
                     className="flex-1 py-1.5 px-3 text-xs font-medium text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-750 border border-slate-200 dark:border-slate-700 rounded-lg transition-colors inline-flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-2xs"
+                    title="Synchronize files and update quota"
                   >
                     <RefreshCw className={`h-3.5 w-3.5 text-slate-500 dark:text-slate-400 ${isSyncing ? 'animate-spin' : ''}`} />
-                    <span>{isSyncing ? 'Syncing...' : 'Sync Now'}</span>
+                    <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
                   </button>
 
+                  {/* Enable / Disable Toggle Button */}
+                  <button
+                    disabled={isToggling}
+                    onClick={() => handleToggleEnabled(account)}
+                    className={`py-1.5 px-2.5 text-xs font-medium rounded-lg border transition-colors inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
+                      isEnabled
+                        ? 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'
+                        : 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-900/60 hover:bg-blue-100'
+                    }`}
+                    title={isEnabled ? 'Pause upload routing to this account' : 'Enable upload routing to this account'}
+                  >
+                    {isToggling ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : isEnabled ? (
+                      <ToggleRight className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                    ) : (
+                      <ToggleLeft className="h-4 w-4 text-slate-400" />
+                    )}
+                    <span className="hidden sm:inline">{isEnabled ? 'Enabled' : 'Paused'}</span>
+                  </button>
+
+                  {/* Disconnect Button */}
                   <button
                     onClick={() => setDisconnectModalAccount(account)}
                     className="py-1.5 px-2.5 text-xs font-medium text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
-                    title="Disconnect Account"
+                    title="Disconnect account from pool"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -325,32 +524,46 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
               <Plus className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Connect Another Google Drive</h3>
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Connect Another Google Drive
+              </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mt-1">
                 Link additional Google accounts to expand total available storage capacity.
               </p>
             </div>
-            <span className="text-xs font-medium text-blue-600 dark:text-blue-400">+ Expand Capacity</span>
+            <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
+              + Expand Capacity
+            </span>
           </div>
         </div>
       )}
 
       {/* Disconnect Confirmation Dialog */}
       {disconnectModalAccount && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 dark:bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-xl border border-slate-200 dark:border-slate-800 space-y-4 text-slate-900 dark:text-slate-100">
+        <div className="fixed inset-0 z-50 bg-slate-900/50 dark:bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 text-slate-900 dark:text-slate-100">
             <div className="flex items-start gap-3.5">
               <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/50 shrink-0">
                 <AlertTriangle className="h-5 w-5" />
               </div>
-              <div className="space-y-1.5">
-                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">Disconnect Account?</h3>
+              <div className="space-y-1.5 flex-1 min-w-0">
+                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  Disconnect Account?
+                </h3>
                 <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                  Are you sure you want to disconnect <strong>{disconnectModalAccount.email}</strong>?
+                  Are you sure you want to disconnect <strong className="text-slate-900 dark:text-slate-100">{disconnectModalAccount.email}</strong>?
                 </p>
-                <div className="p-3 bg-slate-50 dark:bg-slate-800/80 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-300 space-y-1">
-                  <div>• Storage pool capacity will decrease by {formatBytes(disconnectModalAccount.quota.totalBytes)}.</div>
-                  <div>• <strong>No files will be deleted</strong> from your Google Drive. Only the UniCloud connection will be removed.</div>
+                <div className="p-3 bg-slate-50 dark:bg-slate-800/80 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-300 space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-medium">
+                    <span>•</span>
+                    <span>Pool capacity will decrease by {formatBytes(disconnectModalAccount.quota.totalBytes)}.</span>
+                  </div>
+                  <div className="flex items-start gap-1.5 text-slate-600 dark:text-slate-300">
+                    <span>•</span>
+                    <span>
+                      <strong>Your files in Google Drive remain safe.</strong> Disconnecting only removes the UniCloud index and access token.
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -371,7 +584,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-medium shadow-xs transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
               >
                 {disconnecting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                <span>{disconnecting ? 'Disconnecting...' : 'Disconnect'}</span>
+                <span>{disconnecting ? 'Disconnecting...' : 'Disconnect Account'}</span>
               </button>
             </div>
           </div>
