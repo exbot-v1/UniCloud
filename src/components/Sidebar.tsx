@@ -59,29 +59,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside
       id="unicloud-sidebar"
       className={cn(
-        'w-64 flex flex-col justify-between border-r border-[#262c36] bg-[#12161f] p-4 select-none shrink-0 transition-all text-slate-200',
+        'w-60 flex flex-col justify-between border-r border-slate-200 bg-white p-4 select-none shrink-0 transition-all text-slate-700',
         className
       )}
     >
       {/* Brand & Logo */}
       <div>
-        <div className="flex items-center gap-3 px-2 py-3 mb-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500 to-teal-500 text-slate-950 font-black shadow-md shadow-cyan-950/40">
-            <Cloud className="h-5 w-5" />
+        <div className="flex items-center gap-2.5 px-2 py-2 mb-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white shadow-xs">
+            <Cloud className="h-4 w-4" />
           </div>
           <div>
-            <div className="flex items-center gap-1.5">
-              <span className="font-bold tracking-tight text-white text-lg">UniCloud</span>
-              <span className="rounded-full bg-cyan-950/60 border border-cyan-800/60 px-2 py-0.5 text-[10px] font-semibold text-cyan-300 uppercase tracking-wider">
-                Virtual
-              </span>
-            </div>
-            <p className="text-xs text-slate-400">Multi-Account Drive Layer</p>
+            <span className="font-semibold tracking-tight text-slate-900 text-base">UniCloud</span>
           </div>
         </div>
 
         {/* Navigation Items */}
-        <nav className="space-y-1">
+        <nav className="space-y-0.5">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -91,27 +85,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 id={`nav-item-${item.id}`}
                 onClick={() => onSelectTab(item.id)}
                 className={cn(
-                  'w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all text-left',
+                  'w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left group cursor-pointer',
                   isActive
-                    ? 'bg-[#1a202c] text-cyan-200 border border-cyan-500/30 shadow-xs'
-                    : 'text-slate-400 hover:bg-[#161b24] hover:text-slate-200 border border-transparent'
+                    ? 'bg-blue-50 text-blue-700 font-semibold'
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                 )}
               >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span
-                    className={cn(
-                      'w-1.5 h-1.5 rounded-full transition-all',
-                      isActive ? 'bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]' : 'bg-transparent'
-                    )}
-                  />
-                  <Icon className={cn('h-4 w-4 shrink-0', isActive ? 'text-cyan-400' : 'text-slate-400')} />
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Icon className={cn('h-4 w-4 shrink-0 transition-colors', isActive ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600')} />
                   <span className="truncate">{item.label}</span>
                 </div>
                 {item.badge !== undefined && (
                   <span
                     className={cn(
-                      'text-xs font-semibold px-2 py-0.5 rounded-full',
-                      isActive ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-500/30' : 'bg-[#161b24] text-slate-400 border border-[#262c36]'
+                      'text-xs font-medium px-2 py-0.5 rounded-full',
+                      isActive ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
                     )}
                   >
                     {item.badge}
@@ -123,43 +111,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </nav>
       </div>
 
-      {/* Storage Pool Widget & Account Action */}
-      <div className="mt-6 pt-4 border-t border-[#262c36] space-y-3">
-        <div className="rounded-2xl border border-[#262c36] bg-[#161b24] p-3.5 shadow-sm">
-          <div className="flex items-center justify-between text-xs mb-2">
-            <span className="font-semibold text-slate-300 flex items-center gap-1.5">
-              <Layers className="h-3.5 w-3.5 text-cyan-400" />
-              Storage Pool
-            </span>
-            <span className="font-medium text-cyan-300">{poolSummary.usagePercentage}%</span>
+      {/* Storage Summary & Connect Action */}
+      <div className="pt-4 border-t border-slate-200 space-y-3">
+        <div className="px-2 py-1">
+          <div className="flex items-center justify-between text-xs text-slate-600 mb-1.5 font-medium">
+            <span>Storage</span>
+            <span>{poolSummary.usagePercentage}%</span>
           </div>
 
           {/* Progress Bar */}
-          <div className="h-2 w-full overflow-hidden rounded-full bg-[#0e1117] border border-[#262c36] mb-2">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 mb-1.5">
             <div
-              className="h-full bg-gradient-to-r from-cyan-500 to-teal-400 rounded-full transition-all duration-500"
+              className="h-full bg-blue-600 rounded-full transition-all duration-300"
               style={{ width: `${Math.min(100, poolSummary.usagePercentage)}%` }}
             />
           </div>
 
-          <div className="flex justify-between items-center text-[11px] text-slate-400">
-            <span>{formatBytes(poolSummary.totalUsedBytes)} used</span>
-            <span>{formatBytes(poolSummary.totalCapacityBytes)} pool</span>
-          </div>
-          
-          <div className="mt-2 pt-2 border-t border-[#262c36] text-[10px] text-slate-400 flex items-center justify-between">
-            <span>{poolSummary.accounts.length} {poolSummary.accounts.length === 1 ? 'Connected Account' : 'Connected Accounts'}</span>
-            <span className="text-teal-400 font-medium">{formatBytes(poolSummary.totalFreeBytes)} free</span>
+          <div className="text-[11px] text-slate-500">
+            {formatBytes(poolSummary.totalUsedBytes)} of {formatBytes(poolSummary.totalCapacityBytes)} used
           </div>
         </div>
 
         <button
           id="btn-add-account-sidebar"
           onClick={onOpenAddAccount}
-          className="w-full flex items-center justify-between text-xs font-semibold text-cyan-300 hover:text-white bg-[#1a202c] hover:bg-[#222a38] border border-cyan-500/30 rounded-xl px-3 py-2 transition-all shadow-xs"
+          className="w-full flex items-center justify-center gap-1.5 text-xs font-medium text-slate-700 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg py-2 px-3 transition-colors shadow-2xs cursor-pointer"
         >
-          <span>+ Connect Google Drive</span>
-          <ChevronRight className="h-3.5 w-3.5 text-cyan-400" />
+          <span>Connect Google Drive</span>
         </button>
       </div>
     </aside>
