@@ -119,18 +119,24 @@ export class FileService {
    */
   async getFoldersInFolder(
     userId: string,
-    folderId: string | null = null
+    folderId: string | null = null,
+    options?: { isTrashed?: boolean; isStarred?: boolean }
   ): Promise<VirtualFolder[]> {
+    const isTrashed = options?.isTrashed ?? false;
     let sql = `
       SELECT * FROM virtual_folders 
-      WHERE user_id = $1 AND is_trashed = false
+      WHERE user_id = $1 AND is_trashed = $2
     `;
-    const params: any[] = [userId];
+    const params: any[] = [userId, isTrashed];
+
+    if (options?.isStarred) {
+      sql += ` AND is_starred = true`;
+    }
 
     if (folderId !== null && folderId !== undefined) {
       params.push(folderId);
       sql += ` AND parent_id = $${params.length}`;
-    } else {
+    } else if (folderId === null) {
       sql += ` AND parent_id IS NULL`;
     }
 

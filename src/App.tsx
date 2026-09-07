@@ -17,15 +17,12 @@ import { SpecView } from './components/SpecView';
 import { UploadModal } from './components/UploadModal';
 import { AddAccountModal } from './components/AddAccountModal';
 import { AuthModal } from './components/AuthModal';
-import {
-  DEMO_STORAGE_ACCOUNTS,
-  DEMO_VIRTUAL_FILES,
-  DEMO_VIRTUAL_FOLDERS,
-} from './data/mockData';
+import { DEMO_STORAGE_ACCOUNTS } from './data/mockData';
 import { calculateStoragePoolMetrics } from './lib/storageMetrics';
 import { authFetch, clearSessionToken } from './lib/api';
 import { StorageAccount, StoragePoolSummary } from './types/account';
 import { UserPublicProfile } from './types/auth';
+import { VirtualFile } from './types/filesystem';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveNavTab>('dashboard');
@@ -42,6 +39,7 @@ export default function App() {
   // Real backend storage pool state
   const [realAccounts, setRealAccounts] = useState<StorageAccount[] | null>(null);
   const [realPoolSummary, setRealPoolSummary] = useState<StoragePoolSummary | null>(null);
+  const [realRecentFiles, setRealRecentFiles] = useState<VirtualFile[]>([]);
 
   // Check current session from /api/auth/me on mount
   const checkSession = useCallback(async () => {
@@ -66,9 +64,10 @@ export default function App() {
 
   const loadUserData = useCallback(async () => {
     try {
-      const [accRes, poolRes] = await Promise.all([
+      const [accRes, poolRes, filesRes] = await Promise.all([
         authFetch('/api/accounts'),
         authFetch('/api/storage/pool'),
+        authFetch('/api/files?folderId=all'),
       ]);
 
       if (accRes.ok) {
@@ -83,6 +82,20 @@ export default function App() {
         if (poolJson.success) {
           setRealPoolSummary(poolJson.data);
         }
+      }
+
+      if (filesRes.ok) {
+        const filesJson = await filesRes.json();
+        if (filesJson.success && filesJson.data?.files) {
+          const sorted = [...filesJson.data.files].sort(
+            (a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
+          );
+          setRealRecentFiles(sorted.slice(0, 10));
+        } else {
+          setRealRecentFiles([]);
+        }
+      } else {
+        setRealRecentFiles([]);
       }
     } catch (err) {
       console.warn('Could not load user accounts from database', err);
@@ -124,6 +137,7 @@ export default function App() {
       setUser(null);
       setRealAccounts(null);
       setRealPoolSummary(null);
+      setRealRecentFiles([]);
     }
   };
 
@@ -151,21 +165,6 @@ export default function App() {
     }
     return calculateStoragePoolMetrics(accounts);
   }, [realPoolSummary, realAccounts, accounts]);
-
-  // Filter virtual files for specific views
-  const recentFiles = useMemo(() => {
-    return [...DEMO_VIRTUAL_FILES].sort(
-      (a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
-    );
-  }, []);
-
-  const starredFiles = useMemo(() => {
-    return DEMO_VIRTUAL_FILES.filter((f) => f.isStarred);
-  }, []);
-
-  const trashedFiles = useMemo(() => {
-    return DEMO_VIRTUAL_FILES.filter((f) => f.isTrashed);
-  }, []);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#0e1117] text-slate-100 font-sans antialiased relative selection:bg-cyan-500/25 selection:text-cyan-200">
@@ -225,7 +224,7 @@ export default function App() {
           {activeTab === 'dashboard' && (
             <DashboardView
               poolSummary={poolSummary}
-              recentFiles={recentFiles}
+              recentFiles={realRecentFiles}
               onOpenUpload={() => setIsUploadModalOpen(true)}
               onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               onNavigateFiles={() => setActiveTab('files')}
@@ -236,49 +235,57 @@ export default function App() {
 
           {activeTab === 'files' && (
             <FilesView
-              folders={DEMO_VIRTUAL_FOLDERS}
-              files={DEMO_VIRTUAL_FILES}
-              accounts={accounts}
+              accounts={realAccounts || []}
+              hasConnectedAccounts={Boolean(realAccounts && realAccounts.length > 0)}
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
+              onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               tabTitle="My Files"
-              isDemoData={true}
+              activeView="files"
+              isDemoData={false}
+              onRefreshStoragePool={loadUserData}
             />
           )}
 
           {activeTab === 'recent' && (
             <FilesView
-              folders={[]}
-              files={recentFiles}
-              accounts={accounts}
+              accounts={realAccounts || []}
+              hasConnectedAccounts={Boolean(realAccounts && realAccounts.length > 0)}
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
+              onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               tabTitle="Recent Files"
-              isDemoData={isUsingDemoData}
+              activeView="recent"
+              isDemoData={false}
+              onRefreshStoragePool={loadUserData}
             />
           )}
 
           {activeTab === 'starred' && (
             <FilesView
-              folders={DEMO_VIRTUAL_FOLDERS.filter((f) => f.isStarred)}
-              files={starredFiles}
-              accounts={accounts}
+              accounts={realAccounts || []}
+              hasConnectedAccounts={Boolean(realAccounts && realAccounts.length > 0)}
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
+              onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               tabTitle="Starred Items"
-              isDemoData={true}
+              activeView="starred"
+              isDemoData={false}
+              onRefreshStoragePool={loadUserData}
             />
           )}
 
           {activeTab === 'trash' && (
             <FilesView
-              folders={[]}
-              files={trashedFiles}
-              accounts={accounts}
+              accounts={realAccounts || []}
+              hasConnectedAccounts={Boolean(realAccounts && realAccounts.length > 0)}
               searchQuery={searchQuery}
               onOpenUpload={() => setIsUploadModalOpen(true)}
+              onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               tabTitle="Virtual Trash"
-              isDemoData={true}
+              activeView="trash"
+              isDemoData={false}
+              onRefreshStoragePool={loadUserData}
             />
           )}
 

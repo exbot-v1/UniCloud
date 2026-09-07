@@ -830,11 +830,14 @@ apiRouter.get('/storage/pool', requireAuth, getStoragePoolHandler);
  */
 apiRouter.get('/files', requireAuth, async (req: Request, res: Response) => {
   try {
-    const folderId = req.query.folderId ? String(req.query.folderId) : null;
     const starredOnly = req.query.starredOnly === 'true';
     const trashedOnly = req.query.trashedOnly === 'true';
     const storageAccountId = req.query.storageAccountId ? String(req.query.storageAccountId) : undefined;
     const searchQuery = req.query.search ? String(req.query.search) : undefined;
+
+    const folderId = req.query.folderId === 'all'
+      ? undefined
+      : (req.query.folderId ? String(req.query.folderId) : (starredOnly || trashedOnly ? undefined : null));
 
     const [files, folders] = await Promise.all([
       fileService.getFilesInFolder(req.user!.id, folderId, {
@@ -843,7 +846,10 @@ apiRouter.get('/files', requireAuth, async (req: Request, res: Response) => {
         storageAccountId,
         searchQuery,
       }),
-      fileService.getFoldersInFolder(req.user!.id, folderId),
+      fileService.getFoldersInFolder(req.user!.id, folderId, {
+        isTrashed: trashedOnly,
+        isStarred: starredOnly,
+      }),
     ]);
 
     const response: ApiResponse<{ files: typeof files; folders: typeof folders }> = {
