@@ -176,22 +176,22 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="w-full max-w-lg bg-white rounded-2xl p-6 shadow-xl border border-slate-200 space-y-5 animate-in fade-in zoom-in-95 duration-150 text-slate-900">
+    <div className="fixed inset-0 z-50 bg-slate-900/40 dark:bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-xl border border-slate-200 dark:border-slate-800 space-y-5 animate-in fade-in zoom-in-95 duration-150 text-slate-900 dark:text-slate-100">
         {/* Header */}
-        <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+        <div className="flex items-start justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-blue-50 text-blue-600 border border-blue-100">
+            <div className="p-2.5 rounded-xl bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900">
               <HardDrive className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-base font-semibold text-slate-900">Connect Google Drive Account</h3>
-              <p className="text-xs text-slate-500">Add storage capacity to your UniCloud unified pool</p>
+              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">Connect Google Drive Account</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Add storage capacity to your UniCloud unified pool</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <X className="h-5 w-5" />
           </button>
@@ -199,12 +199,12 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
 
         {/* Authentication Requirement Check */}
         {!user && (
-          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 space-y-3">
+          <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/80 space-y-3">
             <div className="flex items-start gap-2.5">
-              <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+              <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
               <div>
-                <p className="text-xs font-semibold text-amber-900">UniCloud Account Required</p>
-                <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
+                <p className="text-xs font-semibold text-amber-900 dark:text-amber-300">UniCloud Account Required</p>
+                <p className="text-xs text-amber-800 dark:text-amber-400 mt-0.5 leading-relaxed">
                   Sign in or register your UniCloud user account first so connected Google Drive accounts are safely bound to your account.
                 </p>
               </div>
@@ -224,11 +224,11 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
 
         {/* Success Banner */}
         {connectedAccount && (
-          <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex items-start gap-3 animate-in fade-in">
-            <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
+          <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex items-start gap-3 animate-in fade-in">
+            <CheckCircle2 className="h-5 w-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
             <div>
-              <p className="text-xs font-semibold text-emerald-900">Account Connected Successfully!</p>
-              <p className="text-xs text-emerald-800 mt-0.5">
+              <p className="text-xs font-semibold text-emerald-900 dark:text-emerald-300">Account Connected Successfully!</p>
+              <p className="text-xs text-emerald-800 dark:text-emerald-400 mt-0.5">
                 <strong>{connectedAccount.email}</strong> is now pooling capacity into your storage. Closing...
               </p>
             </div>
@@ -237,68 +237,68 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
 
         {/* Error Banner */}
         {errorMessage && (
-          <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 flex items-start gap-2.5">
-            <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+          <div className="p-3.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 flex items-start gap-2.5">
+            <AlertCircle className="h-4 w-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
             <div>
-              <p className="text-xs font-semibold text-rose-900">Connection Failed</p>
-              <p className="text-xs text-rose-800 mt-0.5">{errorMessage}</p>
+              <p className="text-xs font-semibold text-rose-900 dark:text-rose-300">Connection Failed</p>
+              <p className="text-xs text-rose-800 dark:text-rose-400 mt-0.5">{errorMessage}</p>
             </div>
           </div>
         )}
 
         {/* Configuration Status & Instructions */}
         {loadingConfig ? (
-          <div className="py-8 text-center text-slate-500 text-xs flex items-center justify-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+          <div className="py-8 text-center text-slate-500 dark:text-slate-400 text-xs flex items-center justify-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin text-blue-600 dark:text-blue-400" />
             <span>Checking Google OAuth configuration...</span>
           </div>
         ) : config && !config.isConfigured ? (
           <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
-              <div className="flex items-center gap-2 text-xs font-semibold text-amber-800">
-                <AlertCircle className="h-4 w-4 text-amber-600" />
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
                 <span>Google OAuth Credentials Needed</span>
               </div>
-              <p className="text-xs text-slate-600 leading-relaxed">
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                 To connect real Google Drive accounts, provide your Google Cloud OAuth 2.0 Web Client credentials in your environment:
               </p>
-              <div className="p-3 bg-white rounded-lg border border-slate-200 font-mono text-[11px] text-slate-700 space-y-1">
+              <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 font-mono text-[11px] text-slate-700 dark:text-slate-300 space-y-1">
                 <div>GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com</div>
                 <div>GOOGLE_CLIENT_SECRET=GOCSPX-your_client_secret</div>
               </div>
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-700">Authorized Redirect URI:</label>
+              <label className="text-xs font-medium text-slate-700 dark:text-slate-300">Authorized Redirect URI:</label>
               <div className="flex items-center gap-2">
                 <input
                   type="text"
                   readOnly
                   value={config.redirectUri}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 font-mono select-all focus:outline-hidden"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-800 dark:text-slate-200 font-mono select-all focus:outline-hidden"
                 />
                 <button
                   type="button"
                   onClick={handleCopyUri}
-                  className="px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-medium border border-slate-200 transition-colors shrink-0 flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                  className="px-3 py-2 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-medium border border-slate-200 dark:border-slate-700 transition-colors shrink-0 flex items-center gap-1.5 cursor-pointer shadow-2xs"
                 >
-                  {copiedUri ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedUri ? <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
                   <span>{copiedUri ? 'Copied' : 'Copy'}</span>
                 </button>
               </div>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 Add this exact URI to your Google Cloud Console &gt; Credentials &gt; Authorized redirect URIs.
               </p>
             </div>
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-blue-50/60 border border-blue-100 text-xs text-slate-600 space-y-1.5">
-              <div className="flex items-center gap-2 font-semibold text-blue-900">
-                <ShieldCheck className="h-4 w-4 text-blue-600" />
+            <div className="p-4 rounded-xl bg-blue-50/60 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/60 text-xs text-slate-600 dark:text-slate-300 space-y-1.5">
+              <div className="flex items-center gap-2 font-semibold text-blue-900 dark:text-blue-300">
+                <ShieldCheck className="h-4 w-4 text-blue-600 dark:text-blue-400" />
                 <span>Multi-Account Storage</span>
               </div>
-              <p className="leading-relaxed text-slate-600">
+              <p className="leading-relaxed text-slate-600 dark:text-slate-300">
                 UniCloud requests minimal scopes required to inspect quotas and manage files. Tokens are encrypted server-side and never exposed to the client browser.
               </p>
             </div>
@@ -310,11 +310,11 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
                 id="btn-google-oauth-launch"
                 disabled={connecting || Boolean(connectedAccount) || !user}
                 onClick={handleStartOAuth}
-                className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-900 border border-slate-200 hover:border-slate-300 rounded-xl text-sm font-medium shadow-xs transition-all flex items-center justify-center gap-3 cursor-pointer"
+                className="w-full py-2.5 px-4 bg-white dark:bg-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 rounded-xl text-sm font-medium shadow-xs transition-all flex items-center justify-center gap-3 cursor-pointer"
               >
                 {connecting ? (
                   <>
-                    <Loader2 className="h-4 w-4 animate-spin text-slate-700" />
+                    <Loader2 className="h-4 w-4 animate-spin text-slate-700 dark:text-slate-300" />
                     <span>Authorizing with Google...</span>
                   </>
                 ) : (
@@ -343,7 +343,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
               </button>
             </div>
 
-            <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
+            <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-1">
               <span>Unlimited accounts per user</span>
               <span>Google Drive v3 API</span>
             </div>
@@ -351,11 +351,11 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
         )}
 
         {/* Footer */}
-        <div className="flex justify-end pt-2 border-t border-slate-100">
+        <div className="flex justify-end pt-2 border-t border-slate-100 dark:border-slate-800">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-medium border border-slate-200 transition-colors cursor-pointer"
+            className="px-4 py-2 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-medium border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
           >
             Close
           </button>

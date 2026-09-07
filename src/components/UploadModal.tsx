@@ -370,17 +370,17 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     : null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
-      <div className="w-full max-w-lg bg-white rounded-2xl p-6 shadow-xl border border-slate-200 space-y-5 max-h-[92vh] overflow-y-auto text-slate-900">
+    <div className="fixed inset-0 z-50 bg-slate-900/40 dark:bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+      <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-xl border border-slate-200 dark:border-slate-800 space-y-5 max-h-[92vh] overflow-y-auto text-slate-900 dark:text-slate-100">
         {/* Modal Header */}
-        <div className="flex items-start justify-between border-b border-slate-100 pb-3.5">
+        <div className="flex items-start justify-between border-b border-slate-100 dark:border-slate-800 pb-3.5">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-blue-50 text-blue-600 border border-blue-100">
+            <div className="p-2.5 rounded-xl bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900">
               <UploadCloud className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-base font-semibold text-slate-900">Upload Files</h3>
-              <p className="text-xs text-slate-500">
+              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">Upload Files</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Resumable streaming upload across connected Google Drive accounts
               </p>
             </div>
@@ -388,21 +388,21 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           <button
             onClick={onClose}
             disabled={isUploading}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-40 cursor-pointer"
+            className="p-1.5 rounded-lg text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-40 cursor-pointer"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center p-1 bg-slate-100 rounded-lg">
+        <div className="flex items-center p-1 bg-slate-100 dark:bg-slate-800/80 rounded-lg">
           <button
             type="button"
             onClick={() => setActiveTab('upload')}
             className={`flex-1 py-1.5 px-3 rounded-md text-xs font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
               activeTab === 'upload'
-                ? 'bg-white text-slate-900 shadow-2xs font-semibold'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs font-semibold'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
             }`}
           >
             <UploadCloud className="h-3.5 w-3.5" />
@@ -413,8 +413,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             onClick={() => setActiveTab('simulate')}
             className={`flex-1 py-1.5 px-3 rounded-md text-xs font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
               activeTab === 'simulate'
-                ? 'bg-white text-slate-900 shadow-2xs font-semibold'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs font-semibold'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
             }`}
           >
             <Zap className="h-3.5 w-3.5" />
@@ -435,7 +435,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={handleDrop}
                     onClick={() => fileInputRef.current?.click()}
-                    className="border-2 border-dashed border-slate-200 hover:border-blue-400 bg-slate-50/50 hover:bg-blue-50/20 rounded-xl p-6 text-center cursor-pointer transition-all group"
+                    className="border-2 border-dashed border-slate-200 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500 bg-slate-50/50 dark:bg-slate-850/50 hover:bg-blue-50/20 dark:hover:bg-blue-950/20 rounded-xl p-6 text-center cursor-pointer transition-all group"
                   >
                     <input
                       ref={fileInputRef}
@@ -443,27 +443,27 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                       onChange={handleFileChange}
                       className="hidden"
                     />
-                    <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto mb-2.5 group-hover:scale-105 transition-transform border border-blue-100">
+                    <div className="w-11 h-11 rounded-xl bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto mb-2.5 group-hover:scale-105 transition-transform border border-blue-100 dark:border-blue-900">
                       <UploadCloud className="h-5 w-5" />
                     </div>
-                    <p className="text-xs font-semibold text-slate-900 mb-1">
+                    <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 mb-1">
                       Click to choose a file or drag &amp; drop here
                     </p>
-                    <p className="text-[11px] text-slate-500">
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
                       Supports large files via server-side resumable Google Drive streaming
                     </p>
                   </div>
                 ) : (
-                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
+                  <div className="p-3.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-slate-200 dark:border-slate-700 flex items-center justify-between">
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shrink-0">
+                      <div className="w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-950/70 border border-blue-100 dark:border-blue-900 flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0">
                         <FileText className="h-5 w-5" />
                       </div>
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-slate-900 truncate">
+                        <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
                           {selectedFile.name}
                         </p>
-                        <p className="text-[11px] text-slate-500">
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
                           {formatBytes(selectedFile.size)} • {selectedFile.type || 'Unknown MIME'}
                         </p>
                       </div>
@@ -472,7 +472,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                       <button
                         type="button"
                         onClick={handleResetForNewUpload}
-                        className="text-xs text-slate-500 hover:text-rose-600 p-1.5 rounded-lg transition-colors cursor-pointer font-medium"
+                        className="text-xs text-slate-500 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 p-1.5 rounded-lg transition-colors cursor-pointer font-medium"
                       >
                         Change
                       </button>
@@ -483,7 +483,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                 {/* Routing Strategy Config */}
                 <div className="space-y-3 pt-1">
                   <div>
-                    <label className="font-medium text-slate-700 block text-xs mb-1.5">
+                    <label className="font-medium text-slate-700 dark:text-slate-300 block text-xs mb-1.5">
                       Routing Mode
                     </label>
                     <div className="grid grid-cols-3 gap-2 text-xs">
@@ -499,8 +499,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                           onClick={() => setStrategy(s.id)}
                           className={`py-2 px-2.5 rounded-lg border text-center font-medium transition-all cursor-pointer ${
                             strategy === s.id
-                              ? 'border-blue-600 bg-blue-50/80 text-blue-700 font-semibold shadow-2xs'
-                              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                              ? 'border-blue-600 bg-blue-50/80 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 font-semibold shadow-2xs'
+                              : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-750'
                           }`}
                         >
                           {s.label}
@@ -511,14 +511,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
                   {strategy === UploadRoutingStrategy.MANUAL && (
                     <div className="animate-in fade-in duration-100">
-                      <label className="font-medium text-slate-700 block text-xs mb-1">
+                      <label className="font-medium text-slate-700 dark:text-slate-300 block text-xs mb-1">
                         Target Storage Account
                       </label>
                       <select
                         disabled={isUploading}
                         value={preferredAccountId}
                         onChange={(e) => setPreferredAccountId(e.target.value)}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg focus:border-blue-600 focus:outline-hidden text-xs cursor-pointer"
+                        className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-lg focus:border-blue-600 focus:outline-hidden text-xs cursor-pointer"
                       >
                         <option value="">Select an account...</option>
                         {poolSummary.accounts.map((acc) => (
@@ -533,30 +533,30 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
                 {/* Live Progress Bar */}
                 {isUploading && (
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5 animate-in fade-in duration-150">
+                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2.5 animate-in fade-in duration-150">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-slate-900 flex items-center gap-1.5">
-                        <RotateCw className="h-3.5 w-3.5 text-blue-600 animate-spin" />
+                      <span className="font-medium text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                        <RotateCw className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 animate-spin" />
                         Uploading to Google Drive...
                       </span>
-                      <span className="font-mono text-blue-600 font-semibold">
+                      <span className="font-mono text-blue-600 dark:text-blue-400 font-semibold">
                         {uploadProgress}%
                       </span>
                     </div>
 
-                    <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                    <div className="w-full bg-slate-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-blue-600 transition-all duration-200 ease-out rounded-full"
+                        className="h-full bg-blue-600 dark:bg-blue-500 transition-all duration-200 ease-out rounded-full"
                         style={{ width: `${uploadProgress}%` }}
                       />
                     </div>
 
-                    <div className="flex items-center justify-between text-[11px] text-slate-500">
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
                       <span>
                         {formatBytes(bytesUploaded)} of {formatBytes(selectedFile?.size || 0)}
                       </span>
                       {assignedAccount && (
-                        <span className="text-slate-700 font-medium">
+                        <span className="text-slate-700 dark:text-slate-300 font-medium">
                           Account: {assignedAccount.displayName || assignedAccount.email}
                         </span>
                       )}
@@ -566,11 +566,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
                 {/* Error Banner */}
                 {uploadError && (
-                  <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2.5">
-                    <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs flex items-start gap-2.5">
+                    <AlertCircle className="h-4 w-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                     <div className="flex-1">
                       <p className="font-semibold">Upload Failed</p>
-                      <p className="text-[11px] text-rose-600/90">{uploadError}</p>
+                      <p className="text-[11px] text-rose-600/90 dark:text-rose-400/90">{uploadError}</p>
                     </div>
                   </div>
                 )}
@@ -593,7 +593,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                           type="button"
                           disabled={!selectedFile || (strategy === UploadRoutingStrategy.MANUAL && !preferredAccountId)}
                           onClick={handleStartUpload}
-                          className="flex-1 py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed text-white rounded-lg text-xs font-medium shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                          className="flex-1 py-2.5 px-4 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-100 dark:disabled:bg-slate-800 disabled:text-slate-400 dark:disabled:text-slate-600 disabled:cursor-not-allowed text-white rounded-lg text-xs font-medium shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
                         >
                           <UploadCloud className="h-4 w-4" />
                           <span>Start Upload</span>
@@ -604,9 +604,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                     <button
                       type="button"
                       onClick={handleAbort}
-                      className="w-full py-2.5 px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                      className="w-full py-2.5 px-4 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-2 cursor-pointer"
                     >
-                      <Ban className="h-4 w-4 text-rose-600" />
+                      <Ban className="h-4 w-4 text-rose-600 dark:text-rose-400" />
                       <span>Abort Upload</span>
                     </button>
                   )}
@@ -614,30 +614,30 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               </>
             ) : (
               /* Success State */
-              <div className="p-5 bg-white rounded-xl border border-emerald-200 text-center space-y-4 animate-in zoom-in-95 duration-200">
-                <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-100 flex items-center justify-center mx-auto">
+              <div className="p-5 bg-white dark:bg-slate-900 rounded-xl border border-emerald-200 dark:border-emerald-800 text-center space-y-4 animate-in zoom-in-95 duration-200">
+                <div className="w-12 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-800 flex items-center justify-center mx-auto">
                   <CheckCircle2 className="h-6 w-6" />
                 </div>
                 <div>
-                  <h4 className="text-base font-semibold text-slate-900">Upload Complete</h4>
-                  <p className="text-xs text-slate-500 mt-1">
+                  <h4 className="text-base font-semibold text-slate-900 dark:text-slate-100">Upload Complete</h4>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                     File was successfully streamed and mapped to your virtual cloud filesystem.
                   </p>
                 </div>
 
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-left text-xs space-y-2">
+                <div className="p-3 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-slate-200 dark:border-slate-700 text-left text-xs space-y-2">
                   <div className="flex justify-between">
-                    <span className="text-slate-500">File:</span>
-                    <span className="font-medium text-slate-900">{selectedFile?.name}</span>
+                    <span className="text-slate-500 dark:text-slate-400">File:</span>
+                    <span className="font-medium text-slate-900 dark:text-slate-100">{selectedFile?.name}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Size:</span>
-                    <span className="font-mono text-slate-800">{formatBytes(selectedFile?.size || 0)}</span>
+                    <span className="text-slate-500 dark:text-slate-400">Size:</span>
+                    <span className="font-mono text-slate-800 dark:text-slate-200">{formatBytes(selectedFile?.size || 0)}</span>
                   </div>
                   {assignedAccount && (
-                    <div className="flex justify-between border-t border-slate-200 pt-1.5">
-                      <span className="text-slate-500">Stored On:</span>
-                      <span className="font-medium text-emerald-700">
+                    <div className="flex justify-between border-t border-slate-200 dark:border-slate-700 pt-1.5">
+                      <span className="text-slate-500 dark:text-slate-400">Stored On:</span>
+                      <span className="font-medium text-emerald-700 dark:text-emerald-400">
                         {assignedAccount.displayName || assignedAccount.email}
                       </span>
                     </div>
@@ -648,14 +648,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                   <button
                     type="button"
                     onClick={handleResetForNewUpload}
-                    className="flex-1 py-2 px-3 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-medium border border-slate-200 transition-colors cursor-pointer"
+                    className="flex-1 py-2 px-3 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-medium border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
                   >
                     Upload Another
                   </button>
                   <button
                     type="button"
                     onClick={onClose}
-                    className="flex-1 py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors cursor-pointer shadow-xs"
+                    className="flex-1 py-2 px-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium transition-colors cursor-pointer shadow-xs"
                   >
                     Done
                   </button>
@@ -670,27 +670,27 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         {/* ===================================================================== */}
         {activeTab === 'simulate' && (
           <div className="space-y-4 text-xs">
-            <div className="p-3 rounded-lg bg-blue-50 border border-blue-100 text-blue-900 text-xs flex items-start gap-2.5">
-              <Zap className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+            <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900 text-blue-900 dark:text-blue-300 text-xs flex items-start gap-2.5">
+              <Zap className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
               <div>
                 <span className="font-semibold">Capacity Routing Engine:</span> Test how UniCloud distributes files across your accounts before uploading.
               </div>
             </div>
 
             <div>
-              <label className="font-medium text-slate-700 block mb-1">Simulated File Name</label>
+              <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">Simulated File Name</label>
               <input
                 type="text"
                 value={simFileName}
                 onChange={(e) => setSimFileName(e.target.value)}
-                className="w-full px-3 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg focus:border-blue-600 focus:outline-hidden"
+                className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-lg focus:border-blue-600 focus:outline-hidden"
               />
             </div>
 
             <div>
-              <div className="flex justify-between font-medium text-slate-700 mb-1">
+              <div className="flex justify-between font-medium text-slate-700 dark:text-slate-300 mb-1">
                 <span>File Size Simulation</span>
-                <span className="text-blue-600 font-semibold">{simSizeMb} MB ({formatBytes(simSizeBytes)})</span>
+                <span className="text-blue-600 dark:text-blue-400 font-semibold">{simSizeMb} MB ({formatBytes(simSizeBytes)})</span>
               </div>
               <input
                 type="range"
@@ -702,9 +702,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                   setSimSizeMb(Number(e.target.value));
                   setSimRoutingResult(null);
                 }}
-                className="w-full accent-blue-600 h-2 bg-slate-100 rounded-lg cursor-pointer"
+                className="w-full accent-blue-600 h-2 bg-slate-100 dark:bg-slate-800 rounded-lg cursor-pointer"
               />
-              <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+              <div className="flex justify-between text-[10px] text-slate-400 dark:text-slate-500 mt-1">
                 <span>10 MB</span>
                 <span>1 GB</span>
                 <span>2.5 GB</span>
@@ -713,7 +713,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             </div>
 
             <div>
-              <label className="font-medium text-slate-700 block mb-1">Routing Strategy</label>
+              <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">Routing Strategy</label>
               <div className="grid grid-cols-3 gap-2">
                 {[
                   { id: UploadRoutingStrategy.MOST_FREE_SPACE, label: 'Most Free Space' },
@@ -729,8 +729,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                     }}
                     className={`py-2 px-3 rounded-lg border text-center font-medium transition-all cursor-pointer ${
                       simStrategy === s.id
-                        ? 'border-blue-600 bg-blue-50/80 text-blue-700 font-semibold shadow-2xs'
-                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                        ? 'border-blue-600 bg-blue-50/80 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 font-semibold shadow-2xs'
+                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-750'
                     }`}
                   >
                     {s.label}
@@ -741,11 +741,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
             {simStrategy === UploadRoutingStrategy.MANUAL && (
               <div>
-                <label className="font-medium text-slate-700 block mb-1">Target Account</label>
+                <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">Target Account</label>
                 <select
                   value={simPreferredAccountId}
                   onChange={(e) => setSimPreferredAccountId(e.target.value)}
-                  className="w-full px-3 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg focus:border-blue-600 focus:outline-hidden"
+                  className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-lg focus:border-blue-600 focus:outline-hidden"
                 >
                   <option value="">Select an account</option>
                   {poolSummary.accounts.map((acc) => (
@@ -760,39 +760,39 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             <button
               onClick={handleSimulateRouting}
               disabled={isSimulating}
-              className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
             >
               <Zap className="h-4 w-4" />
               <span>{isSimulating ? 'Evaluating Capacity...' : 'Simulate Routing Decision'}</span>
             </button>
 
             {simRoutingResult && simSelectedAccount && (
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs animate-in fade-in slide-in-from-top-2">
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-3 text-xs animate-in fade-in slide-in-from-top-2">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-900 flex items-center gap-1.5">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  <span className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
                     Routing Decision Resolved
                   </span>
-                  <span className="font-mono text-[10px] bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-full font-medium">
+                  <span className="font-mono text-[10px] bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 px-2 py-0.5 rounded-full font-medium">
                     {simRoutingResult.strategyUsed}
                   </span>
                 </div>
 
-                <p className="text-slate-600 text-[11px]">{simRoutingResult.reason}</p>
+                <p className="text-slate-600 dark:text-slate-300 text-[11px]">{simRoutingResult.reason}</p>
 
-                <div className="p-3 bg-white rounded-lg border border-slate-200 space-y-2">
-                  <div className="flex items-center gap-2 font-medium text-slate-900">
-                    <HardDrive className="h-4 w-4 text-blue-600" />
+                <div className="p-3 bg-white dark:bg-slate-850 rounded-lg border border-slate-200 dark:border-slate-700 space-y-2">
+                  <div className="flex items-center gap-2 font-medium text-slate-900 dark:text-slate-100">
+                    <HardDrive className="h-4 w-4 text-blue-600 dark:text-blue-400" />
                     <span>Selected Destination: {simSelectedAccount.displayName || simSelectedAccount.email}</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 pt-1.5 border-t border-slate-100">
+                  <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 dark:text-slate-400 pt-1.5 border-t border-slate-100 dark:border-slate-700">
                     <div>
-                      <span className="text-slate-500 block">Available Headroom:</span>
-                      <span className="font-semibold text-slate-900">{formatBytes(simRoutingResult.availableCapacityBeforeBytes)}</span>
+                      <span className="text-slate-500 dark:text-slate-400 block">Available Headroom:</span>
+                      <span className="font-semibold text-slate-900 dark:text-slate-100">{formatBytes(simRoutingResult.availableCapacityBeforeBytes)}</span>
                     </div>
                     <div>
-                      <span className="text-slate-500 block">Projected After Upload:</span>
-                      <span className="font-semibold text-emerald-700">{formatBytes(simRoutingResult.projectedCapacityAfterBytes)}</span>
+                      <span className="text-slate-500 dark:text-slate-400 block">Projected After Upload:</span>
+                      <span className="font-semibold text-emerald-700 dark:text-emerald-400">{formatBytes(simRoutingResult.projectedCapacityAfterBytes)}</span>
                     </div>
                   </div>
                 </div>

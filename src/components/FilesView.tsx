@@ -439,13 +439,13 @@ export const FilesView: React.FC<FilesViewProps> = ({
   if (!hasConnectedAccounts) {
     return (
       <div id="files-view-empty-accounts" className="space-y-6 max-w-7xl mx-auto pb-12">
-        <div className="rounded-2xl border border-slate-200 bg-white p-12 text-center max-w-md mx-auto space-y-4 my-12 shadow-xs">
-          <div className="h-12 w-12 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mx-auto text-blue-600">
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-12 text-center max-w-md mx-auto space-y-4 my-12 shadow-xs">
+          <div className="h-12 w-12 rounded-xl bg-blue-50 dark:bg-blue-950/60 border border-blue-100 dark:border-blue-900 flex items-center justify-center mx-auto text-blue-600 dark:text-blue-400">
             <HardDrive className="h-6 w-6" />
           </div>
           <div className="space-y-1">
-            <h3 className="text-base font-semibold text-slate-900">No Google Drive Accounts Connected</h3>
-            <p className="text-xs text-slate-500 leading-relaxed max-w-sm mx-auto">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">No Google Drive Accounts Connected</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed max-w-sm mx-auto">
               Connect a Google Drive account to view and manage your files across your unified storage pool.
             </p>
           </div>
@@ -453,7 +453,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
             <div className="pt-2">
               <button
                 onClick={onOpenAddAccount}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-xs transition-colors cursor-pointer"
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg shadow-xs transition-colors cursor-pointer"
               >
                 <Plus className="h-4 w-4" />
                 <span>Connect Google Drive</span>
@@ -468,14 +468,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
   return (
     <div id="files-view" className="space-y-6 max-w-7xl mx-auto pb-12">
       {/* Top Action Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
         {/* Breadcrumb Navigation */}
-        <div className="flex items-center gap-2 text-sm text-slate-700 overflow-x-auto min-w-0">
+        <div className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 overflow-x-auto min-w-0">
           {breadcrumbs.length > 1 && (
             <button
               onClick={handleNavigateParent}
               title="Navigate to parent folder"
-              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors shrink-0 cursor-pointer"
+              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors shrink-0 cursor-pointer"
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
@@ -486,12 +486,12 @@ export const FilesView: React.FC<FilesViewProps> = ({
               const isLast = index === breadcrumbs.length - 1;
               return (
                 <React.Fragment key={node.id ?? 'root'}>
-                  {index > 0 && <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />}
+                  {index > 0 && <ChevronRight className="h-3.5 w-3.5 text-slate-400 dark:text-slate-600 shrink-0" />}
                   <button
                     onClick={() => handleNavigateBreadcrumb(index)}
                     className={cn(
                       'transition-colors truncate max-w-[180px] cursor-pointer',
-                      isLast ? 'text-slate-900 font-semibold text-base' : 'text-slate-500 hover:text-slate-800 text-sm font-medium'
+                      isLast ? 'text-slate-900 dark:text-slate-100 font-semibold text-base' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 text-sm font-medium'
                     )}
                   >
                     {node.name}
@@ -505,7 +505,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
         {/* Controls: Filter, View Toggle, New Folder, Upload */}
         <div className="flex items-center gap-2 flex-wrap">
           {/* Category Filter */}
-          <div className="flex items-center bg-slate-100 p-0.5 rounded-lg text-xs font-medium text-slate-600">
+          <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400">
             {['all', 'documents', 'images', 'archives'].map((cat) => (
               <button
                 key={cat}
@@ -513,8 +513,8 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 className={cn(
                   'px-2.5 py-1 rounded-md capitalize transition-colors cursor-pointer',
                   categoryFilter === cat
-                    ? 'bg-white text-slate-900 font-medium shadow-2xs'
-                    : 'text-slate-500 hover:text-slate-900'
+                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 font-medium shadow-2xs'
+                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 )}
               >
                 {cat}
@@ -523,13 +523,13 @@ export const FilesView: React.FC<FilesViewProps> = ({
           </div>
 
           {/* View Mode Switcher */}
-          <div className="flex items-center bg-slate-100 p-0.5 rounded-lg">
+          <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg">
             <button
               onClick={() => setViewMode('list')}
               aria-label="List View"
               className={cn(
                 'p-1.5 rounded-md transition-colors cursor-pointer',
-                viewMode === 'list' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-400 hover:text-slate-700'
+                viewMode === 'list' ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-2xs' : 'text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
               <List className="h-4 w-4" />
@@ -539,7 +539,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
               aria-label="Grid View"
               className={cn(
                 'p-1.5 rounded-md transition-colors cursor-pointer',
-                viewMode === 'grid' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-400 hover:text-slate-700'
+                viewMode === 'grid' ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-2xs' : 'text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
               <LayoutGrid className="h-4 w-4" />
@@ -553,9 +553,9 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 setIsCreatingFolder(true);
                 setNewFolderName('');
               }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg transition-colors shadow-2xs cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg transition-colors shadow-2xs cursor-pointer"
             >
-              <Plus className="h-3.5 w-3.5 text-slate-500" />
+              <Plus className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
               <span>New Folder</span>
             </button>
           )}
@@ -563,7 +563,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
           {/* Upload Button */}
           <button
             onClick={onOpenUpload}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors shadow-2xs cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-2xs cursor-pointer"
           >
             <Upload className="h-3.5 w-3.5" />
             <span>Upload</span>
@@ -573,20 +573,20 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
       {/* Loading State */}
       {isLoading && (
-        <div className="p-16 text-center rounded-2xl border border-slate-200 bg-white shadow-xs">
-          <Loader2 className="h-6 w-6 text-blue-600 animate-spin mx-auto mb-2" />
-          <p className="text-sm font-medium text-slate-700">Loading files...</p>
+        <div className="p-16 text-center rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs">
+          <Loader2 className="h-6 w-6 text-blue-600 dark:text-blue-400 animate-spin mx-auto mb-2" />
+          <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Loading files...</p>
         </div>
       )}
 
       {/* Error State */}
       {!isLoading && errorMessage && (
-        <div className="p-10 text-center rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 shadow-xs space-y-3">
-          <AlertCircle className="h-6 w-6 text-rose-600 mx-auto" />
+        <div className="p-10 text-center rounded-2xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 shadow-xs space-y-3">
+          <AlertCircle className="h-6 w-6 text-rose-600 dark:text-rose-400 mx-auto" />
           <p className="text-sm font-medium">{errorMessage}</p>
           <button
             onClick={() => fetchFilesystemData(currentFolderId)}
-            className="px-3.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium transition-colors shadow-2xs cursor-pointer"
+            className="px-3.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium transition-colors shadow-2xs cursor-pointer"
           >
             Retry
           </button>
@@ -601,7 +601,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
             {/* Folders Section */}
             {filteredFolders.length > 0 && (
               <div className="space-y-2.5">
-                <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   Folders ({filteredFolders.length})
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
@@ -615,17 +615,17 @@ export const FilesView: React.FC<FilesViewProps> = ({
                         className={cn(
                           'p-3.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between group',
                           isSelected
-                            ? 'border-blue-600 bg-blue-50/50 shadow-xs ring-1 ring-blue-600'
-                            : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-xs'
+                            ? 'border-blue-600 bg-blue-50/50 dark:bg-blue-950/40 shadow-xs ring-1 ring-blue-600'
+                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xs'
                         )}
                       >
                         <div className="flex items-center gap-3 min-w-0 flex-1">
-                          <div className="p-2 rounded-lg bg-blue-50 text-blue-600 shrink-0 border border-blue-100/70">
-                            <Folder className="h-4 w-4 fill-blue-600/20" />
+                          <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 shrink-0 border border-blue-100/70 dark:border-blue-900/70">
+                            <Folder className="h-4 w-4 fill-blue-600/20 dark:fill-blue-400/20" />
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="text-xs font-medium text-slate-900 truncate">{folder.name}</p>
-                            <p className="text-[11px] text-slate-500 truncate">
+                            <p className="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">{folder.name}</p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                               {folder.itemCount !== undefined ? `${folder.itemCount} items` : 'Folder'}
                               {folderAccount ? ` • ${folderAccount.email.split('@')[0]}` : ''}
                             </p>
@@ -640,7 +640,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                               setRenameValue(folder.name);
                             }}
                             title="Rename folder"
-                            className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                            className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                           >
                             <Edit2 className="h-3.5 w-3.5" />
                           </button>
@@ -655,18 +655,18 @@ export const FilesView: React.FC<FilesViewProps> = ({
             {/* Files Section */}
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
-                <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   Files ({filteredFiles.length})
                 </h3>
-                <span className="text-[11px] text-slate-400">
+                <span className="text-[11px] text-slate-400 dark:text-slate-500">
                   Select a file to view storage details
                 </span>
               </div>
 
               {filteredFiles.length === 0 && filteredFolders.length === 0 ? (
-                <div className="p-12 text-center rounded-2xl border border-dashed border-slate-200 bg-white shadow-2xs">
-                  <FileText className="h-8 w-8 text-slate-400 mx-auto mb-2" />
-                  <p className="text-sm font-medium text-slate-800">
+                <div className="p-12 text-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs">
+                  <FileText className="h-8 w-8 text-slate-400 dark:text-slate-500 mx-auto mb-2" />
+                  <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
                     {activeView === 'starred'
                       ? 'No starred items'
                       : activeView === 'trash'
@@ -675,7 +675,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                       ? 'No recent files'
                       : 'This folder is empty'}
                   </p>
-                  <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm mx-auto">
                     {activeView === 'starred'
                       ? 'Star files to quickly find them later.'
                       : activeView === 'trash'
@@ -688,7 +688,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                     <div className="mt-4 flex items-center justify-center gap-2">
                       <button
                         onClick={onOpenUpload}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors shadow-2xs cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-2xs cursor-pointer"
                       >
                         <Upload className="h-3.5 w-3.5" />
                         <span>Upload to this folder</span>
@@ -698,10 +698,10 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 </div>
               ) : viewMode === 'list' ? (
                 /* LIST VIEW */
-                <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-2xs">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden shadow-2xs">
                   <table className="w-full text-left text-xs">
                     <thead>
-                      <tr className="border-b border-slate-200 bg-slate-50/75 text-slate-500 font-medium">
+                      <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/75 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 font-medium">
                         <th className="py-2.5 pl-4 font-medium">Name</th>
                         <th className="py-2.5 font-medium">Storage Location</th>
                         <th className="py-2.5 font-medium">Size</th>
@@ -709,7 +709,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                         <th className="py-2.5 pr-4 text-right font-medium">Actions</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                       {filteredFiles.map((file) => {
                         const account = accounts.find((a) => a.id === file.storageAccountId);
                         const isSelected = selectedFile?.id === file.id;
@@ -719,33 +719,33 @@ export const FilesView: React.FC<FilesViewProps> = ({
                             onClick={() => setSelectedFile(isSelected ? null : file)}
                             className={cn(
                               'cursor-pointer transition-colors select-none group',
-                              isSelected ? 'bg-blue-50/70 text-slate-900' : 'hover:bg-slate-50/75'
+                              isSelected ? 'bg-blue-50/70 dark:bg-blue-950/50 text-slate-900 dark:text-slate-100' : 'hover:bg-slate-50/75 dark:hover:bg-slate-800/50'
                             )}
                           >
                             <td className="py-2.5 pl-4 flex items-center gap-2.5">
                               <button
                                 onClick={(e) => handleToggleStar(file, e)}
                                 title={file.isStarred ? 'Unstar' : 'Star'}
-                                className="p-0.5 text-slate-300 hover:text-amber-500 transition-colors shrink-0 cursor-pointer"
+                                className="p-0.5 text-slate-300 dark:text-slate-600 hover:text-amber-500 transition-colors shrink-0 cursor-pointer"
                               >
                                 <Star
                                   className={cn(
                                     'h-4 w-4',
-                                    file.isStarred ? 'text-amber-400 fill-amber-400' : 'text-slate-300'
+                                    file.isStarred ? 'text-amber-400 fill-amber-400' : 'text-slate-300 dark:text-slate-600'
                                   )}
                                 />
                               </button>
                               {getFileIcon(file.mimeType)}
-                              <span className="font-medium text-slate-900 truncate max-w-xs">{file.name}</span>
+                              <span className="font-medium text-slate-900 dark:text-slate-100 truncate max-w-xs">{file.name}</span>
                             </td>
                             <td className="py-2.5">
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[11px] font-medium border border-slate-200/60">
-                                <HardDrive className="h-3 w-3 text-slate-400" />
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[11px] font-medium border border-slate-200/60 dark:border-slate-700/60">
+                                <HardDrive className="h-3 w-3 text-slate-400 dark:text-slate-500" />
                                 {account?.email || file.storageAccountId}
                               </span>
                             </td>
-                            <td className="py-2.5 text-slate-600">{formatBytes(file.sizeBytes)}</td>
-                            <td className="py-2.5 text-slate-500">{formatDate(file.modifiedAt)}</td>
+                            <td className="py-2.5 text-slate-600 dark:text-slate-300">{formatBytes(file.sizeBytes)}</td>
+                            <td className="py-2.5 text-slate-500 dark:text-slate-400">{formatDate(file.modifiedAt)}</td>
                             <td className="py-2.5 pr-4 text-right">
                               <div className="inline-flex items-center gap-1">
                                 {file.webUrl && (
@@ -754,7 +754,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     onClick={(e) => e.stopPropagation()}
-                                    className="text-slate-400 hover:text-blue-600 p-1 transition-colors"
+                                    className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 p-1 transition-colors"
                                     title="Open in Google Drive"
                                   >
                                     <ExternalLink className="h-3.5 w-3.5" />
@@ -766,14 +766,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
                                     <button
                                       onClick={(e) => handleRestoreFile(file, e)}
                                       title="Restore file"
-                                      className="p-1 text-slate-400 hover:text-emerald-600 transition-colors cursor-pointer"
+                                      className="p-1 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors cursor-pointer"
                                     >
                                       <RotateCcw className="h-3.5 w-3.5" />
                                     </button>
                                     <button
                                       onClick={(e) => handlePermanentDeleteFile(file, e)}
                                       title="Permanently delete"
-                                      className="p-1 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                                      className="p-1 text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
                                     >
                                       <Trash2 className="h-3.5 w-3.5" />
                                     </button>
@@ -787,14 +787,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
                                         setRenameValue(file.name);
                                       }}
                                       title="Rename file"
-                                      className="p-1 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+                                      className="p-1 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
                                     >
                                       <Edit2 className="h-3.5 w-3.5" />
                                     </button>
                                     <button
                                       onClick={(e) => handleMoveFileToTrash(file, e)}
                                       title="Move to trash"
-                                      className="p-1 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                                      className="p-1 text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
                                     >
                                       <Trash2 className="h-3.5 w-3.5" />
                                     </button>
@@ -819,43 +819,43 @@ export const FilesView: React.FC<FilesViewProps> = ({
                         key={file.id}
                         onClick={() => setSelectedFile(isSelected ? null : file)}
                         className={cn(
-                          'p-4 rounded-xl border bg-white cursor-pointer transition-all space-y-3 relative group',
+                          'p-4 rounded-xl border bg-white dark:bg-slate-900 cursor-pointer transition-all space-y-3 relative group',
                           isSelected
-                            ? 'border-blue-600 ring-1 ring-blue-600 bg-blue-50/40 shadow-xs'
-                            : 'border-slate-200 hover:border-slate-300 hover:shadow-xs'
+                            ? 'border-blue-600 ring-1 ring-blue-600 bg-blue-50/40 dark:bg-blue-950/40 shadow-xs'
+                            : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xs'
                         )}
                       >
                         <div className="flex items-start justify-between">
-                          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+                          <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-750">
                             {getFileIcon(file.mimeType)}
                           </div>
                           <div className="flex items-center gap-1">
                             <button
                               onClick={(e) => handleToggleStar(file, e)}
                               title={file.isStarred ? 'Unstar' : 'Star'}
-                              className="p-1 text-slate-300 hover:text-amber-500 transition-colors cursor-pointer"
+                              className="p-1 text-slate-300 dark:text-slate-600 hover:text-amber-500 transition-colors cursor-pointer"
                             >
                               <Star
                                 className={cn(
                                     'h-4 w-4',
-                                    file.isStarred ? 'text-amber-400 fill-amber-400' : 'text-slate-300'
+                                    file.isStarred ? 'text-amber-400 fill-amber-400' : 'text-slate-300 dark:text-slate-600'
                                 )}
                               />
                             </button>
-                            <span className="text-[11px] font-medium text-slate-500">
+                            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
                               {formatBytes(file.sizeBytes)}
                             </span>
                           </div>
                         </div>
 
                         <div>
-                          <p className="text-xs font-medium text-slate-900 truncate">{file.name}</p>
-                          <p className="text-[11px] text-slate-500 mt-0.5">{formatDate(file.modifiedAt)}</p>
+                          <p className="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">{file.name}</p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{formatDate(file.modifiedAt)}</p>
                         </div>
 
-                        <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px]">
-                          <span className="truncate max-w-[140px] text-slate-500 flex items-center gap-1">
-                            <HardDrive className="h-3 w-3 text-slate-400 shrink-0" />
+                        <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px]">
+                          <span className="truncate max-w-[140px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                            <HardDrive className="h-3 w-3 text-slate-400 dark:text-slate-500 shrink-0" />
                             {account ? account.email.split('@')[0] : file.storageAccountId}
                           </span>
 
@@ -866,7 +866,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 onClick={(e) => e.stopPropagation()}
-                                className="text-slate-400 hover:text-blue-600 p-0.5 transition-colors"
+                                className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 p-0.5 transition-colors"
                                 title="Open in Google Drive"
                               >
                                 <ExternalLink className="h-3.5 w-3.5" />
@@ -876,7 +876,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                               <button
                                 onClick={(e) => handleRestoreFile(file, e)}
                                 title="Restore"
-                                className="text-slate-400 hover:text-emerald-600 p-0.5 transition-colors cursor-pointer"
+                                className="text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 p-0.5 transition-colors cursor-pointer"
                               >
                                 <RotateCcw className="h-3.5 w-3.5" />
                               </button>
@@ -884,7 +884,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                               <button
                                 onClick={(e) => handleMoveFileToTrash(file, e)}
                                 title="Trash"
-                                className="text-slate-400 hover:text-rose-600 p-0.5 transition-colors cursor-pointer"
+                                className="text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 p-0.5 transition-colors cursor-pointer"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
@@ -901,58 +901,58 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
           {/* Right Column: File Details Panel */}
           {selectedFile && (
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4 h-fit lg:sticky lg:top-24 text-slate-700">
-              <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs space-y-4 h-fit lg:sticky lg:top-24 text-slate-700 dark:text-slate-300">
+              <div className="flex items-start justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
                 <div className="flex items-center gap-2">
-                  <Info className="h-4 w-4 text-blue-600" />
-                  <h4 className="text-sm font-semibold text-slate-900">File Details</h4>
+                  <Info className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                  <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">File Details</h4>
                 </div>
                 <button
                   onClick={() => setSelectedFile(null)}
-                  className="p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                  className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
                 >
                   <X className="h-4 w-4" />
                 </button>
               </div>
 
-              <div className="p-3 bg-slate-50 rounded-lg border border-slate-200/70 space-y-0.5">
-                <p className="text-[11px] font-medium text-slate-500">File Name</p>
-                <p className="text-xs font-semibold text-slate-900 break-words">{selectedFile.name}</p>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/80 rounded-lg border border-slate-200/70 dark:border-slate-750 space-y-0.5">
+                <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">File Name</p>
+                <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 break-words">{selectedFile.name}</p>
               </div>
 
               <div className="space-y-3 text-xs">
                 <div>
-                  <p className="text-slate-500 font-medium">Storage Location</p>
-                  <div className="flex items-center gap-1.5 mt-1 font-medium text-slate-800">
-                    <HardDrive className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                  <p className="text-slate-500 dark:text-slate-400 font-medium">Storage Location</p>
+                  <div className="flex items-center gap-1.5 mt-1 font-medium text-slate-800 dark:text-slate-200">
+                    <HardDrive className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
                     <span className="break-all">{accounts.find((a) => a.id === selectedFile.storageAccountId)?.email || selectedFile.storageAccountId}</span>
                   </div>
                 </div>
 
                 <div>
-                  <p className="text-slate-500 font-medium">File Size</p>
-                  <p className="font-medium text-slate-800 mt-0.5">{formatBytes(selectedFile.sizeBytes)}</p>
+                  <p className="text-slate-500 dark:text-slate-400 font-medium">File Size</p>
+                  <p className="font-medium text-slate-800 dark:text-slate-200 mt-0.5">{formatBytes(selectedFile.sizeBytes)}</p>
                 </div>
 
                 <div>
-                  <p className="text-slate-500 font-medium">Type</p>
-                  <p className="text-slate-700 mt-0.5">{selectedFile.mimeType}</p>
+                  <p className="text-slate-500 dark:text-slate-400 font-medium">Type</p>
+                  <p className="text-slate-700 dark:text-slate-300 mt-0.5">{selectedFile.mimeType}</p>
                 </div>
 
                 <div>
-                  <p className="text-slate-500 font-medium">Last Modified</p>
-                  <p className="text-slate-700 mt-0.5">{formatDate(selectedFile.modifiedAt)}</p>
+                  <p className="text-slate-500 dark:text-slate-400 font-medium">Last Modified</p>
+                  <p className="text-slate-700 dark:text-slate-300 mt-0.5">{formatDate(selectedFile.modifiedAt)}</p>
                 </div>
               </div>
 
               {/* Drawer Actions */}
-              <div className="pt-3 border-t border-slate-100 space-y-2">
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
                 {selectedFile.webUrl && (
                   <a
                     href={selectedFile.webUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="w-full py-2 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
+                    className="w-full py-2 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 dark:bg-blue-950/70 dark:hover:bg-blue-900/80 dark:text-blue-300 dark:border-blue-800 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
                   >
                     <span>Open in Google Drive</span>
                     <ExternalLink className="h-3.5 w-3.5" />
@@ -962,12 +962,12 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleToggleStar(selectedFile)}
-                    className="flex-1 py-1.5 px-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                    className="flex-1 py-1.5 px-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
                   >
                     <Star
                       className={cn(
                         'h-3.5 w-3.5',
-                        selectedFile.isStarred ? 'text-amber-400 fill-amber-400' : 'text-slate-400'
+                        selectedFile.isStarred ? 'text-amber-400 fill-amber-400' : 'text-slate-400 dark:text-slate-500'
                       )}
                     />
                     <span>{selectedFile.isStarred ? 'Starred' : 'Star'}</span>
@@ -978,9 +978,9 @@ export const FilesView: React.FC<FilesViewProps> = ({
                       setRenamingItem({ id: selectedFile.id, name: selectedFile.name, isFolder: false });
                       setRenameValue(selectedFile.name);
                     }}
-                    className="flex-1 py-1.5 px-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                    className="flex-1 py-1.5 px-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
                   >
-                    <Edit2 className="h-3.5 w-3.5 text-slate-400" />
+                    <Edit2 className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
                     <span>Rename</span>
                   </button>
                 </div>
@@ -989,14 +989,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => handleRestoreFile(selectedFile)}
-                      className="flex-1 py-1.5 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                      className="flex-1 py-1.5 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/50 dark:hover:bg-emerald-900/60 dark:text-emerald-300 dark:border-emerald-800 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                     >
                       <RotateCcw className="h-3.5 w-3.5" />
                       <span>Restore</span>
                     </button>
                     <button
                       onClick={() => handlePermanentDeleteFile(selectedFile)}
-                      className="flex-1 py-1.5 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                      className="flex-1 py-1.5 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 dark:bg-rose-950/50 dark:hover:bg-rose-900/60 dark:text-rose-300 dark:border-rose-800 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                       <span>Delete Forever</span>
@@ -1005,7 +1005,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 ) : (
                   <button
                     onClick={() => handleMoveFileToTrash(selectedFile)}
-                    className="w-full py-1.5 px-3 bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    className="w-full py-1.5 px-3 bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 dark:bg-slate-800 dark:hover:bg-rose-950/40 dark:text-rose-400 dark:border-rose-900/50 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     <span>Move to Trash</span>
@@ -1019,13 +1019,13 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
       {/* New Folder Modal */}
       {isCreatingFolder && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-white rounded-2xl p-5 shadow-xl border border-slate-200 space-y-4 text-slate-900">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 dark:bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-xl border border-slate-200 dark:border-slate-800 space-y-4 text-slate-900 dark:text-slate-100">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-900">Create Folder</h3>
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Create Folder</h3>
               <button
                 onClick={() => setIsCreatingFolder(false)}
-                className="p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+                className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1033,7 +1033,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
             <form onSubmit={handleCreateFolderSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1.5">Folder Name</label>
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">Folder Name</label>
                 <input
                   type="text"
                   required
@@ -1041,7 +1041,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                   value={newFolderName}
                   onChange={(e) => setNewFolderName(e.target.value)}
                   placeholder="e.g. Documents"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:bg-white dark:focus:bg-slate-850 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
@@ -1049,14 +1049,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsCreatingFolder(false)}
-                  className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                  className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isCreatingFolderSubmitting || !newFolderName.trim()}
-                  className="px-4 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors shadow-2xs disabled:opacity-50 cursor-pointer"
+                  className="px-4 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-2xs disabled:opacity-50 cursor-pointer"
                 >
                   {isCreatingFolderSubmitting ? 'Creating...' : 'Create Folder'}
                 </button>
@@ -1068,15 +1068,15 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
       {/* Rename Item Modal */}
       {renamingItem && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-white rounded-2xl p-5 shadow-xl border border-slate-200 space-y-4 text-slate-900">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 dark:bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-xl border border-slate-200 dark:border-slate-800 space-y-4 text-slate-900 dark:text-slate-100">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-900">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                 Rename {renamingItem.isFolder ? 'Folder' : 'File'}
               </h3>
               <button
                 onClick={() => setRenamingItem(null)}
-                className="p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+                className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1084,14 +1084,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
             <form onSubmit={handleRenameSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1.5">New Name</label>
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">New Name</label>
                 <input
                   type="text"
                   required
                   autoFocus
                   value={renameValue}
                   onChange={(e) => setRenameValue(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:bg-white dark:focus:bg-slate-850 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
@@ -1099,14 +1099,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setRenamingItem(null)}
-                  className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                  className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isRenamingSubmitting || !renameValue.trim()}
-                  className="px-4 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors shadow-2xs disabled:opacity-50 cursor-pointer"
+                  className="px-4 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-2xs disabled:opacity-50 cursor-pointer"
                 >
                   {isRenamingSubmitting ? 'Renaming...' : 'Save'}
                 </button>
