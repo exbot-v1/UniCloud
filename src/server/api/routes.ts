@@ -15,7 +15,7 @@ import { checkDatabaseHealth, query } from '../../db/client.js';
 import { UserService } from '../services/UserService.js';
 import { requireAuth, optionalAuth, SESSION_COOKIE_NAME, getSessionCookieOptions, getClearCookieOptions, extractSessionToken } from './middleware/auth.js';
 import { accountService } from '../services/AccountService.js';
-import { fileService } from '../services/FileService.js';
+import { fileService, normalizeFolderId } from '../services/FileService.js';
 import { storageService } from '../services/StorageService.js';
 import { uploadService } from '../services/UploadService.js';
 import { UploadRoutingStrategy } from '../../types/upload.js';
@@ -835,9 +835,17 @@ apiRouter.get('/files', requireAuth, async (req: Request, res: Response) => {
     const storageAccountId = req.query.storageAccountId ? String(req.query.storageAccountId) : undefined;
     const searchQuery = req.query.search ? String(req.query.search) : undefined;
 
-    const folderId = req.query.folderId === 'all'
-      ? undefined
-      : (req.query.folderId ? String(req.query.folderId) : (starredOnly || trashedOnly ? undefined : null));
+    const rawFolderParam = req.query.folderId !== undefined ? String(req.query.folderId) : undefined;
+    let folderId: string | null | undefined = undefined;
+    if (rawFolderParam === 'all') {
+      folderId = undefined;
+    } else if (rawFolderParam !== undefined && rawFolderParam !== '') {
+      folderId = normalizeFolderId(rawFolderParam);
+    } else if (starredOnly || trashedOnly) {
+      folderId = undefined;
+    } else {
+      folderId = null;
+    }
 
     const [files, folders] = await Promise.all([
       fileService.getFilesInFolder(req.user!.id, folderId, {
@@ -934,6 +942,28 @@ apiRouter.get('/files/:id/content', requireAuth, async (req: Request, res: Respo
       return res.send(result.content);
     }
     res.status(404).json({ success: false, error: { message: 'File content unavailable' } });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * GET /api/files/:id/thumbnail
+ * Returns authenticated thumbnail image for virtual file
+ */
+apiRouter.get('/files/:id/thumbnail', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const result = await fileService.getThumbnailStream(req.user!.id, req.params.id);
+    res.setHeader('Content-Type', result.contentType || 'image/jpeg');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+
+    if (result.stream) {
+      return result.stream.pipe(res);
+    }
+    if (result.content) {
+      return res.send(result.content);
+    }
+    res.status(404).json({ success: false, error: { message: 'Thumbnail not available' } });
   } catch (err) {
     sendApiError(res, err);
   }
@@ -1116,7 +1146,11 @@ apiRouter.post('/files/:id/copy', requireAuth, async (req: Request, res: Respons
  */
 apiRouter.post('/folders', requireAuth, async (req: Request, res: Response) => {
   try {
-    const folder = await fileService.createFolder(req.user!.id, req.body);
+    const payload = {
+      ...req.body,
+      parentId: normalizeFolderId(req.body.parentId),
+    };
+    const folder = await fileService.createFolder(req.user!.id, payload);
     const response: ApiResponse<typeof folder> = {
       success: true,
       data: folder,
@@ -1130,6 +1164,52 @@ apiRouter.post('/folders', requireAuth, async (req: Request, res: Response) => {
     sendApiError(res, err);
   }
 });
+
+/**
+ * GET /api/folders/:id
+ * Retrieves metadata for a single virtual folder.
+ */
+apiRouter.get('/folders/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const cleanId = normalizeFolderId(req.params.id) || req.params.id;
+    const folder = await fileService.getFolderById(req.user!.id, cleanId);
+    const response: ApiResponse<typeof folder> = {
+      success: true,
+      data: folder,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
+ * POST /api/folders/:id/move
+ * Moves a virtual folder into another virtual folder or root.
+ */
+apiRouter.post('/folders/:id/move', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const cleanId = normalizeFolderId(req.params.id) || req.params.id;
+    const { targetFolderId } = req.body;
+    const folder = await fileService.moveFolder(req.user!.id, cleanId, targetFolderId);
+    const response: ApiResponse<typeof folder> = {
+      success: true,
+      data: folder,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
 
 /**
  * PATCH /api/folders/:id/rename

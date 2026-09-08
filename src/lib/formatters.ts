@@ -54,3 +54,23 @@ export function formatRelativeTime(isoString: string): string {
     return isoString;
   }
 }
+
+/**
+ * Normalizes folder identifiers to clean, raw UUIDs, stripping display or test prefixes
+ * like "vfol " or "vfol_". Returns null for root, empty, or 'all'.
+ */
+export function normalizeFolderId(rawId?: string | null): string | null {
+  if (!rawId) return null;
+  const trimmed = String(rawId).trim();
+  if (trimmed === '' || trimmed === 'null' || trimmed === 'undefined' || trimmed === 'all') {
+    return null;
+  }
+  // Extract pure UUID if present
+  const uuidMatch = trimmed.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  if (uuidMatch) {
+    return uuidMatch[0].toLowerCase();
+  }
+  // Strip common prefixes
+  const stripped = trimmed.replace(/^vfol[_\s:]+/i, '');
+  return stripped || null;
+}

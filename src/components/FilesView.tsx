@@ -37,6 +37,10 @@ import {
   Download,
   FolderInput,
   Copy,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  CloudUpload,
 } from 'lucide-react';
 import { VirtualFile, VirtualFolder, ViewMode } from '../types/filesystem';
 import { StorageAccount } from '../types/account';
@@ -53,7 +57,7 @@ export interface FilesViewProps {
   accounts: StorageAccount[];
   hasConnectedAccounts?: boolean;
   searchQuery?: string;
-  onOpenUpload: () => void;
+  onOpenUpload: (targetFolderId?: string | null) => void;
   onOpenAddAccount?: () => void;
   tabTitle?: string;
   activeView?: 'files' | 'recent' | 'starred' | 'trash';
@@ -107,6 +111,13 @@ export const FilesView: React.FC<FilesViewProps> = ({
   const [selectedFile, setSelectedFile] = useState<VirtualFile | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<VirtualFolder | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+
+  // Sorting & Multi-select & Drag-and-drop states
+  const [sortBy, setSortBy] = useState<'name' | 'size' | 'modified'>('name');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
+  const [isDraggingOver, setIsDraggingOver] = useState<boolean>(false);
+  const [dragCounter, setDragCounter] = useState<number>(0);
 
   // Preview & Context & Move/Copy states
   const [previewFile, setPreviewFile] = useState<VirtualFile | null>(null);
@@ -316,7 +327,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
   // Filter files based on search, current folder, and category
   const filteredFiles = useMemo(() => {
-    return rawFiles.filter((f) => {
+    const list = rawFiles.filter((f) => {
       // Search query
       if (searchQuery.trim() && !f.name.toLowerCase().includes(searchQuery.trim().toLowerCase())) {
         return false;
@@ -339,7 +350,19 @@ export const FilesView: React.FC<FilesViewProps> = ({
       }
       return true;
     });
-  }, [rawFiles, searchQuery, categoryFilter, propFiles, currentFolderId]);
+
+    return [...list].sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === 'name') {
+        cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      } else if (sortBy === 'size') {
+        cmp = a.sizeBytes - b.sizeBytes;
+      } else if (sortBy === 'modified') {
+        cmp = new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime();
+      }
+      return sortDirection === 'asc' ? cmp : -cmp;
+    });
+  }, [rawFiles, searchQuery, categoryFilter, propFiles, currentFolderId, sortBy, sortDirection]);
 
   // Filter folders
   const filteredFolders = useMemo(() => {
@@ -347,7 +370,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
     if (activeView === 'recent') {
       return [];
     }
-    return rawFolders.filter((f) => {
+    const list = rawFolders.filter((f) => {
       if (searchQuery.trim() && !f.name.toLowerCase().includes(searchQuery.trim().toLowerCase())) {
         return false;
       }
@@ -357,7 +380,113 @@ export const FilesView: React.FC<FilesViewProps> = ({
       }
       return true;
     });
-  }, [rawFolders, searchQuery, activeView, propFolders, currentFolderId]);
+
+    return [...list].sort((a, b) => {
+      const cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      return sortDirection === 'asc' ? cmp : -cmp;
+    });
+  }, [rawFolders, searchQuery, activeView, propFolders, currentFolderId, sortDirection]);
+
+  // Multi-select & Batch operations
+  const handleToggleSelectFile = (fileId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedFileIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(fileId)) {
+        next.delete(fileId);
+      } else {
+        next.add(fileId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllFiles = () => {
+    if (selectedFileIds.size === filteredFiles.length) {
+      setSelectedFileIds(new Set());
+    } else {
+      setSelectedFileIds(new Set(filteredFiles.map((f) => f.id)));
+    }
+  };
+
+  const handleBatchStar = async () => {
+    const ids = Array.from(selectedFileIds);
+    if (ids.length === 0) return;
+    try {
+      await Promise.all(
+        ids.map((id) => authFetch(`/api/files/${id}/star`, { method: 'PATCH' }))
+      );
+      setRealFiles((prev) =>
+        prev.map((f) => (selectedFileIds.has(f.id) ? { ...f, isStarred: true } : f))
+      );
+      success(`Starred ${ids.length} files.`);
+      setSelectedFileIds(new Set());
+    } catch {
+      error('Failed to star selected files.');
+    }
+  };
+
+  const handleBatchTrash = async () => {
+    const ids = Array.from(selectedFileIds);
+    if (ids.length === 0) return;
+    try {
+      await Promise.all(
+        ids.map((id) => authFetch(`/api/files/${id}`, { method: 'DELETE' }))
+      );
+      setRealFiles((prev) => prev.filter((f) => !selectedFileIds.has(f.id)));
+      if (selectedFile && selectedFileIds.has(selectedFile.id)) {
+        setSelectedFile(null);
+      }
+      onRefreshStoragePool?.();
+      success(`Moved ${ids.length} files to trash.`);
+      setSelectedFileIds(new Set());
+    } catch {
+      error('Failed to move selected files to trash.');
+    }
+  };
+
+  const handleSortClick = (field: 'name' | 'size' | 'modified') => {
+    if (sortBy === field) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(field);
+      setSortDirection('asc');
+    }
+  };
+
+  // Drag-and-drop file upload handlers
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragCounter((prev) => prev + 1);
+    setIsDraggingOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragCounter((prev) => {
+      const next = prev - 1;
+      if (next <= 0) {
+        setIsDraggingOver(false);
+        return 0;
+      }
+      return next;
+    });
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    setDragCounter(0);
+    onOpenUpload(currentFolderId);
+  };
 
   // Navigate down into a folder
   const handleNavigateFolder = (folder: VirtualFolder) => {
@@ -689,6 +818,22 @@ export const FilesView: React.FC<FilesViewProps> = ({
     }
   };
 
+  // Resolve user-friendly file type label
+  const getFileTypeLabel = (mimeType: string, fileName: string): string => {
+    if (mimeType.includes('pdf')) return 'PDF';
+    if (mimeType.includes('spreadsheet') || mimeType.includes('excel') || mimeType.includes('csv')) return 'Spreadsheet';
+    if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return 'Presentation';
+    if (mimeType.includes('word') || mimeType.includes('document')) return 'Document';
+    if (mimeType.startsWith('image/')) return 'Image';
+    if (mimeType.startsWith('video/')) return 'Video';
+    if (mimeType.startsWith('audio/')) return 'Audio';
+    if (mimeType.includes('zip') || mimeType.includes('gzip') || mimeType.includes('tar') || mimeType.includes('archive')) return 'Archive';
+    if (mimeType.includes('code') || mimeType.includes('javascript') || mimeType.includes('typescript') || mimeType.includes('json') || mimeType.includes('html')) return 'Code';
+    if (mimeType.includes('text/')) return 'Text';
+    const ext = fileName.split('.').pop();
+    return ext ? `${ext.toUpperCase()}` : 'File';
+  };
+
   // Resolve file icon by MIME type
   const getFileIcon = (mimeType: string) => {
     if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) {
@@ -737,7 +882,31 @@ export const FilesView: React.FC<FilesViewProps> = ({
   }
 
   return (
-    <div id="files-view" className="space-y-6 max-w-7xl mx-auto pb-12">
+    <div
+      id="files-view"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      className="space-y-6 max-w-7xl mx-auto pb-12 relative"
+    >
+      {/* Drag & Drop Visual Overlay */}
+      {isDraggingOver && (
+        <div className="fixed inset-0 z-50 bg-blue-600/20 dark:bg-blue-600/30 backdrop-blur-xs flex items-center justify-center pointer-events-none transition-all">
+          <div className="bg-white dark:bg-slate-900 border-2 border-dashed border-blue-500 rounded-2xl p-8 shadow-2xl flex flex-col items-center gap-3 animate-in zoom-in-95 duration-150 text-center max-w-md">
+            <div className="p-4 rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400">
+              <CloudUpload className="h-10 w-10 animate-bounce" />
+            </div>
+            <div>
+              <p className="text-base font-semibold text-slate-900 dark:text-slate-100">Drop files here to upload</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                {currentFolderId ? `Files will be uploaded to the current folder` : `Files will be uploaded to root directory`}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Action Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
         {/* Breadcrumb Navigation */}
@@ -773,7 +942,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
           </div>
         </div>
 
-        {/* Controls: Filter, View Toggle, New Folder, Upload */}
+        {/* Controls: Filter, Sort, View Toggle, New Folder, Upload */}
         <div className="flex items-center gap-2 flex-wrap">
           {/* Category Filter */}
           <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400">
@@ -791,6 +960,28 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 {cat}
               </button>
             ))}
+          </div>
+
+          {/* Sort Controls */}
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400">
+            <span className="pl-2 text-slate-400 dark:text-slate-500 text-[11px]">Sort:</span>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              aria-label="Sort files by"
+              className="bg-transparent text-slate-700 dark:text-slate-200 text-xs px-1.5 py-1 font-medium focus:outline-none cursor-pointer"
+            >
+              <option value="name" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200">Name</option>
+              <option value="size" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200">Size</option>
+              <option value="modified" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200">Modified</option>
+            </select>
+            <button
+              onClick={() => setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+              title={sortDirection === 'asc' ? 'Ascending (click for Descending)' : 'Descending (click for Ascending)'}
+              className="p-1 rounded text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer"
+            >
+              {sortDirection === 'asc' ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
+            </button>
           </div>
 
           {/* View Mode Switcher */}
@@ -833,7 +1024,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
           {/* Upload Button */}
           <button
-            onClick={onOpenUpload}
+            onClick={() => onOpenUpload(currentFolderId)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-2xs cursor-pointer"
           >
             <Upload className="h-3.5 w-3.5" />
@@ -919,13 +1110,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                             : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50/50 dark:hover:bg-slate-800/40'
                         )}
                       >
-                        <div
-                          className="flex items-center gap-2.5 min-w-0 flex-1"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleNavigateFolder(folder);
-                          }}
-                        >
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
                           <Folder className="h-4 w-4 text-blue-600 dark:text-blue-400 fill-blue-500/20 shrink-0" />
                           <div className="min-w-0 flex-1">
                             <p className="text-xs font-medium text-slate-800 dark:text-slate-200 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
@@ -961,7 +1146,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 </h3>
                 {filteredFiles.length > 0 && (
                   <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                    Select a file to view storage details
+                    Double-click to preview • Click to inspect details
                   </span>
                 )}
               </div>
@@ -990,7 +1175,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                   {activeView === 'files' && (
                     <div className="mt-4 flex items-center justify-center gap-2">
                       <button
-                        onClick={onOpenUpload}
+                        onClick={() => onOpenUpload(currentFolderId)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-2xs cursor-pointer"
                       >
                         <Upload className="h-3.5 w-3.5" />
@@ -1006,7 +1191,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                   {activeView === 'files' && (
                     <div className="mt-3 flex items-center justify-center">
                       <button
-                        onClick={onOpenUpload}
+                        onClick={() => onOpenUpload(currentFolderId)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-2xs cursor-pointer"
                       >
                         <Upload className="h-3.5 w-3.5" />
@@ -1021,10 +1206,56 @@ export const FilesView: React.FC<FilesViewProps> = ({
                   <table className="w-full text-left text-xs">
                     <thead>
                       <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/75 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 font-medium">
-                        <th className="py-2.5 pl-4 font-medium">Name</th>
+                        <th className="py-2.5 pl-3 w-8">
+                          <input
+                            type="checkbox"
+                            aria-label="Select all files"
+                            checked={filteredFiles.length > 0 && selectedFileIds.size === filteredFiles.length}
+                            onChange={handleSelectAllFiles}
+                            className="rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer h-3.5 w-3.5"
+                          />
+                        </th>
+                        <th
+                          onClick={() => handleSortClick('name')}
+                          className="py-2.5 pl-2 font-medium cursor-pointer select-none hover:text-slate-900 dark:hover:text-slate-200"
+                        >
+                          <div className="flex items-center gap-1">
+                            <span>Name</span>
+                            {sortBy === 'name' ? (
+                              sortDirection === 'asc' ? <ArrowUp className="h-3 w-3 text-blue-600 dark:text-blue-400" /> : <ArrowDown className="h-3 w-3 text-blue-600 dark:text-blue-400" />
+                            ) : (
+                              <ArrowUpDown className="h-3 w-3 opacity-40 hover:opacity-100" />
+                            )}
+                          </div>
+                        </th>
                         <th className="py-2.5 font-medium">Storage Location</th>
-                        <th className="py-2.5 font-medium">Size</th>
-                        <th className="py-2.5 font-medium">Modified</th>
+                        <th
+                          onClick={() => handleSortClick('size')}
+                          className="py-2.5 font-medium cursor-pointer select-none hover:text-slate-900 dark:hover:text-slate-200"
+                        >
+                          <div className="flex items-center gap-1">
+                            <span>Size</span>
+                            {sortBy === 'size' ? (
+                              sortDirection === 'asc' ? <ArrowUp className="h-3 w-3 text-blue-600 dark:text-blue-400" /> : <ArrowDown className="h-3 w-3 text-blue-600 dark:text-blue-400" />
+                            ) : (
+                              <ArrowUpDown className="h-3 w-3 opacity-40 hover:opacity-100" />
+                            )}
+                          </div>
+                        </th>
+                        <th className="py-2.5 font-medium">Type</th>
+                        <th
+                          onClick={() => handleSortClick('modified')}
+                          className="py-2.5 font-medium cursor-pointer select-none hover:text-slate-900 dark:hover:text-slate-200"
+                        >
+                          <div className="flex items-center gap-1">
+                            <span>Modified</span>
+                            {sortBy === 'modified' ? (
+                              sortDirection === 'asc' ? <ArrowUp className="h-3 w-3 text-blue-600 dark:text-blue-400" /> : <ArrowDown className="h-3 w-3 text-blue-600 dark:text-blue-400" />
+                            ) : (
+                              <ArrowUpDown className="h-3 w-3 opacity-40 hover:opacity-100" />
+                            )}
+                          </div>
+                        </th>
                         <th className="py-2.5 pr-4 text-right font-medium">Actions</th>
                       </tr>
                     </thead>
@@ -1032,21 +1263,39 @@ export const FilesView: React.FC<FilesViewProps> = ({
                       {filteredFiles.map((file) => {
                         const account = accounts.find((a) => a.id === file.storageAccountId);
                         const isSelected = selectedFile?.id === file.id;
+                        const isBatchSelected = selectedFileIds.has(file.id);
                         return (
                           <tr
                             key={file.id}
-                            onClick={() => {
-                              setSelectedFile(isSelected ? null : file);
-                              setSelectedFolder(null);
+                            onClick={(e) => {
+                              if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                                handleToggleSelectFile(file.id, e);
+                              } else {
+                                setSelectedFile(isSelected ? null : file);
+                                setSelectedFolder(null);
+                              }
                             }}
                             onDoubleClick={() => handlePreviewFile(file)}
                             onContextMenu={(e) => handleContextMenu(e, file)}
                             className={cn(
                               'cursor-pointer transition-colors select-none group',
-                              isSelected ? 'bg-blue-50/70 dark:bg-blue-950/50 text-slate-900 dark:text-slate-100' : 'hover:bg-slate-50/75 dark:hover:bg-slate-800/50'
+                              isBatchSelected
+                                ? 'bg-blue-50 dark:bg-blue-950/60 text-slate-900 dark:text-slate-100'
+                                : isSelected
+                                ? 'bg-blue-50/70 dark:bg-blue-950/50 text-slate-900 dark:text-slate-100'
+                                : 'hover:bg-slate-50/75 dark:hover:bg-slate-800/50'
                             )}
                           >
-                            <td className="py-2.5 pl-4 flex items-center gap-2.5">
+                            <td className="py-2.5 pl-3 w-8" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${file.name}`}
+                                checked={isBatchSelected}
+                                onChange={(e) => handleToggleSelectFile(file.id, e as any)}
+                                className="rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer h-3.5 w-3.5"
+                              />
+                            </td>
+                            <td className="py-2.5 pl-2 flex items-center gap-2.5">
                               <button
                                 onClick={(e) => handleToggleStar(file, e)}
                                 title={file.isStarred ? 'Unstar' : 'Star'}
@@ -1069,6 +1318,11 @@ export const FilesView: React.FC<FilesViewProps> = ({
                               </span>
                             </td>
                             <td className="py-2.5 text-slate-600 dark:text-slate-300">{formatBytes(file.sizeBytes)}</td>
+                            <td className="py-2.5">
+                              <span className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                                {getFileTypeLabel(file.mimeType, file.name)}
+                              </span>
+                            </td>
                             <td className="py-2.5 text-slate-500 dark:text-slate-400">{formatDate(file.modifiedAt)}</td>
                             <td className="py-2.5 pr-4 text-right">
                               <div className="inline-flex items-center gap-1">
@@ -1128,48 +1382,97 @@ export const FilesView: React.FC<FilesViewProps> = ({
                   {filteredFiles.map((file) => {
                     const account = accounts.find((a) => a.id === file.storageAccountId);
                     const isSelected = selectedFile?.id === file.id;
+                    const isBatchSelected = selectedFileIds.has(file.id);
+                    const isImage = file.mimeType.startsWith('image/');
                     return (
                       <div
                         key={file.id}
-                        onClick={() => {
-                          setSelectedFile(isSelected ? null : file);
-                          setSelectedFolder(null);
+                        onClick={(e) => {
+                          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                            handleToggleSelectFile(file.id, e);
+                          } else {
+                            setSelectedFile(isSelected ? null : file);
+                            setSelectedFolder(null);
+                          }
                         }}
                         onDoubleClick={() => handlePreviewFile(file)}
                         onContextMenu={(e) => handleContextMenu(e, file)}
                         className={cn(
-                          'p-4 rounded-xl border bg-white dark:bg-slate-900 cursor-pointer transition-all space-y-3 relative group select-none',
-                          isSelected
+                          'p-4 rounded-xl border bg-white dark:bg-slate-900 cursor-pointer transition-all space-y-3 relative group select-none flex flex-col justify-between',
+                          isBatchSelected
+                            ? 'border-blue-600 ring-2 ring-blue-600/40 bg-blue-50/40 dark:bg-blue-950/40 shadow-xs'
+                            : isSelected
                             ? 'border-blue-600 ring-1 ring-blue-600 bg-blue-50/40 dark:bg-blue-950/40 shadow-xs'
                             : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xs'
                         )}
                       >
-                        <div className="flex items-start justify-between">
-                          <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-750">
-                            {getFileIcon(file.mimeType)}
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={(e) => handleToggleStar(file, e)}
-                              title={file.isStarred ? 'Unstar' : 'Star'}
-                              className="p-1 text-slate-300 dark:text-slate-600 hover:text-amber-500 transition-colors cursor-pointer"
-                            >
-                              <Star
-                                className={cn(
-                                    'h-4 w-4',
-                                    file.isStarred ? 'text-amber-400 fill-amber-400' : 'text-slate-300 dark:text-slate-600'
-                                )}
-                              />
-                            </button>
-                            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                              {formatBytes(file.sizeBytes)}
-                            </span>
-                          </div>
+                        {/* Selection Checkbox */}
+                        <div
+                          onClick={(e) => handleToggleSelectFile(file.id, e)}
+                          className={cn(
+                            'absolute top-3 left-3 z-10 p-0.5 rounded cursor-pointer transition-opacity',
+                            isBatchSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${file.name}`}
+                            checked={isBatchSelected}
+                            onChange={() => {}}
+                            className="rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer h-3.5 w-3.5 shadow-xs"
+                          />
                         </div>
 
                         <div>
-                          <p className="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">{file.name}</p>
-                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{formatDate(file.modifiedAt)}</p>
+                          <div className="flex items-start justify-between pl-6">
+                            {isImage ? (
+                              <div className="h-14 w-14 rounded-lg bg-slate-100 dark:bg-slate-800 overflow-hidden border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0">
+                                <img
+                                  src={`/api/files/${file.id}/thumbnail`}
+                                  alt={file.name}
+                                  loading="lazy"
+                                  className="h-full w-full object-cover"
+                                  onError={(e) => {
+                                    (e.target as HTMLElement).style.display = 'none';
+                                  }}
+                                />
+                              </div>
+                            ) : (
+                              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-750 shrink-0">
+                                {getFileIcon(file.mimeType)}
+                              </div>
+                            )}
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={(e) => handleToggleStar(file, e)}
+                                title={file.isStarred ? 'Unstar' : 'Star'}
+                                className="p-1 text-slate-300 dark:text-slate-600 hover:text-amber-500 transition-colors cursor-pointer"
+                              >
+                                <Star
+                                  className={cn(
+                                    'h-4 w-4',
+                                    file.isStarred ? 'text-amber-400 fill-amber-400' : 'text-slate-300 dark:text-slate-600'
+                                  )}
+                                />
+                              </button>
+                              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                                {formatBytes(file.sizeBytes)}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="mt-3">
+                            <p className="text-xs font-medium text-slate-900 dark:text-slate-100 truncate" title={file.name}>
+                              {file.name}
+                            </p>
+                            <div className="flex items-center gap-1.5 mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                              <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] font-medium">
+                                {getFileTypeLabel(file.mimeType, file.name)}
+                              </span>
+                              <span>•</span>
+                              <span>{formatDate(file.modifiedAt)}</span>
+                            </div>
+                          </div>
                         </div>
 
                         <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px]">
@@ -1473,6 +1776,9 @@ export const FilesView: React.FC<FilesViewProps> = ({
         isOpen={!!previewFile}
         onClose={() => setPreviewFile(null)}
         onDownload={handleDownloadFile}
+        onToggleStar={handleToggleStar}
+        onDelete={handleMoveFileToTrash}
+        accounts={accounts}
       />
 
       {/* Move / Copy Modal */}
@@ -1539,6 +1845,37 @@ export const FilesView: React.FC<FilesViewProps> = ({
         </div>
       )}
 
+      {/* Floating Batch Operations Toolbar */}
+      {selectedFileIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-slate-900 dark:bg-slate-800 text-white px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-3 border border-slate-750 dark:border-slate-700 text-xs animate-in fade-in slide-in-from-bottom-3 duration-150">
+          <span className="font-semibold text-slate-200">
+            {selectedFileIds.size} {selectedFileIds.size === 1 ? 'file' : 'files'} selected
+          </span>
+          <div className="h-4 w-px bg-slate-700" />
+          <button
+            onClick={handleBatchStar}
+            className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 dark:bg-slate-700 hover:bg-slate-700 dark:hover:bg-slate-600 rounded-lg text-amber-300 font-medium transition-colors cursor-pointer"
+          >
+            <Star className="h-3.5 w-3.5 fill-amber-300" />
+            <span>Star</span>
+          </button>
+          <button
+            onClick={handleBatchTrash}
+            className="flex items-center gap-1.5 px-2.5 py-1 bg-rose-950/80 hover:bg-rose-900/80 text-rose-300 border border-rose-800/60 rounded-lg font-medium transition-colors cursor-pointer"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Move to Trash</span>
+          </button>
+          <button
+            onClick={() => setSelectedFileIds(new Set())}
+            className="p-1 text-slate-400 hover:text-slate-200 rounded transition-colors cursor-pointer ml-1"
+            title="Deselect all"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Context Menu */}
       <ContextMenu
         isOpen={contextMenu.isOpen}
@@ -1546,6 +1883,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
         target={contextMenu.target}
         isTrashView={activeView === 'trash'}
         onClose={() => setContextMenu((prev) => ({ ...prev, isOpen: false }))}
+        onOpenFolder={(item) => handleNavigateFolder(item)}
         onPreview={(item) => handlePreviewFile(item as VirtualFile)}
         onDownload={(item) => handleDownloadFile(item as VirtualFile)}
         onRename={(item) => {

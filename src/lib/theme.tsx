@@ -10,13 +10,14 @@
 
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 
-export type Theme = 'dark' | 'light';
+export type Theme = 'dark' | 'light' | 'system';
 
 interface ThemeContextType {
   theme: Theme;
   setTheme: (theme: Theme) => void;
   toggleTheme: () => void;
   isDark: boolean;
+  effectiveTheme: 'dark' | 'light';
 }
 
 const STORAGE_KEY = 'unicloud_theme';
@@ -27,8 +28,8 @@ function getInitialTheme(): Theme {
   if (typeof window === 'undefined') return 'dark';
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved === 'light' || saved === 'dark') {
-      return saved;
+    if (saved === 'light' || saved === 'dark' || saved === 'system') {
+      return saved as Theme;
     }
   } catch {
     // LocalStorage unavailable
@@ -39,19 +40,49 @@ function getInitialTheme(): Theme {
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [theme, setThemeState] = useState<Theme>(getInitialTheme);
+  const [effectiveTheme, setEffectiveTheme] = useState<'dark' | 'light'>('dark');
 
-  const applyTheme = (newTheme: Theme) => {
+  useEffect(() => {
     if (typeof window === 'undefined') return;
-    const root = document.documentElement;
-    if (newTheme === 'dark') {
-      root.classList.add('dark');
-      root.setAttribute('data-theme', 'dark');
-      root.style.colorScheme = 'dark';
-    } else {
-      root.classList.remove('dark');
-      root.setAttribute('data-theme', 'light');
-      root.style.colorScheme = 'light';
-    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+    const resolveTheme = (t: Theme): 'dark' | 'light' => {
+      if (t === 'system') {
+        return mediaQuery.matches ? 'dark' : 'light';
+      }
+      return t;
+    };
+
+    const apply = (resolved: 'dark' | 'light') => {
+      setEffectiveTheme(resolved);
+      const root = document.documentElement;
+      if (resolved === 'dark') {
+        root.classList.add('dark');
+        root.setAttribute('data-theme', 'dark');
+        root.style.colorScheme = 'dark';
+      } else {
+        root.classList.remove('dark');
+        root.setAttribute('data-theme', 'light');
+        root.style.colorScheme = 'light';
+      }
+    };
+
+    const resolved = resolveTheme(theme);
+    apply(resolved);
+
+    const listener = (e: MediaQueryListEvent) => {
+      if (theme === 'system') {
+        apply(e.matches ? 'dark' : 'light');
+      }
+    };
+
+    mediaQuery.addEventListener('change', listener);
+    return () => mediaQuery.removeEventListener('change', listener);
+  }, [theme]);
+
+  const setTheme = (newTheme: Theme) => {
+    setThemeState(newTheme);
     try {
       localStorage.setItem(STORAGE_KEY, newTheme);
     } catch {
@@ -59,17 +90,8 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
-
-  const setTheme = (newTheme: Theme) => {
-    setThemeState(newTheme);
-    applyTheme(newTheme);
-  };
-
   const toggleTheme = () => {
-    const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    const nextTheme: Theme = effectiveTheme === 'dark' ? 'light' : 'dark';
     setTheme(nextTheme);
   };
 
@@ -78,9 +100,10 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       theme,
       setTheme,
       toggleTheme,
-      isDark: theme === 'dark',
+      isDark: effectiveTheme === 'dark',
+      effectiveTheme,
     }),
-    [theme]
+    [theme, effectiveTheme]
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

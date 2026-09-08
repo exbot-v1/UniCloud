@@ -161,6 +161,13 @@ export default function App() {
     return calculateStoragePoolMetrics(accounts);
   }, [realPoolSummary, realAccounts, accounts]);
 
+  const [uploadTargetFolderId, setUploadTargetFolderId] = useState<string | null>(null);
+
+  const handleOpenUpload = (targetFolderId?: string | null) => {
+    setUploadTargetFolderId(targetFolderId ?? null);
+    setIsUploadModalOpen(true);
+  };
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans antialiased relative selection:bg-blue-100 selection:text-blue-900 dark:selection:bg-blue-900/40 dark:selection:text-blue-200">
       {/* Navigation Sidebar (Desktop) */}
@@ -225,7 +232,7 @@ export default function App() {
               accounts={realAccounts || []}
               hasConnectedAccounts={Boolean(realAccounts && realAccounts.length > 0)}
               searchQuery={searchQuery}
-              onOpenUpload={() => setIsUploadModalOpen(true)}
+              onOpenUpload={handleOpenUpload}
               onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               tabTitle="My Files"
               activeView="files"
@@ -242,7 +249,7 @@ export default function App() {
               accounts={realAccounts || []}
               hasConnectedAccounts={Boolean(realAccounts && realAccounts.length > 0)}
               searchQuery={searchQuery}
-              onOpenUpload={() => setIsUploadModalOpen(true)}
+              onOpenUpload={handleOpenUpload}
               onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               tabTitle="Recent Files"
               activeView="recent"
@@ -257,7 +264,7 @@ export default function App() {
               accounts={realAccounts || []}
               hasConnectedAccounts={Boolean(realAccounts && realAccounts.length > 0)}
               searchQuery={searchQuery}
-              onOpenUpload={() => setIsUploadModalOpen(true)}
+              onOpenUpload={handleOpenUpload}
               onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               tabTitle="Starred Items"
               activeView="starred"
@@ -272,7 +279,7 @@ export default function App() {
               accounts={realAccounts || []}
               hasConnectedAccounts={Boolean(realAccounts && realAccounts.length > 0)}
               searchQuery={searchQuery}
-              onOpenUpload={() => setIsUploadModalOpen(true)}
+              onOpenUpload={handleOpenUpload}
               onOpenAddAccount={() => setIsAddAccountModalOpen(true)}
               tabTitle="Virtual Trash"
               activeView="trash"
@@ -317,6 +324,7 @@ export default function App() {
         onClose={() => setIsUploadModalOpen(false)}
         poolSummary={poolSummary}
         onUploadSuccess={() => loadUserData()}
+        targetFolderId={uploadTargetFolderId}
       />
 
       {/* Connect Account Architectural Modal */}

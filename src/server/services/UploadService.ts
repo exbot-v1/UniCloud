@@ -24,6 +24,7 @@ import { logger } from '../utils/logger.js';
 import { accountService } from './AccountService.js';
 import { ProviderRegistry } from '../providers/ProviderRegistry.js';
 import { query, transaction } from '../../db/client.js';
+import { normalizeFolderId } from './FileService.js';
 
 export class UploadService {
   private mapDbToJob(row: any): UploadJob {
@@ -172,10 +173,12 @@ export class UploadService {
 
     // 1. Target folder validation if specified
     let parentFolderProviderId: string | undefined = undefined;
-    if (req.targetFolderId) {
+    const rawTarget = req.targetFolderId || (req as any).parentId || (req as any).folderId;
+    const cleanTargetFolderId = rawTarget ? normalizeFolderId(rawTarget) : null;
+    if (cleanTargetFolderId) {
       const folderRes = await query(
         'SELECT * FROM virtual_folders WHERE id = $1 AND user_id = $2',
-        [req.targetFolderId, userId]
+        [cleanTargetFolderId, userId]
       );
       if (folderRes.rows.length === 0) {
         throw new AppError(ErrorCode.NOT_FOUND, 'Target folder was not found.', 404);
@@ -224,7 +227,7 @@ export class UploadService {
         jobId,
         userId,
         routingDecision.selectedAccountId,
-        req.targetFolderId || null,
+        cleanTargetFolderId || null,
         req.fileName,
         req.mimeType || 'application/octet-stream',
         req.sizeBytes,

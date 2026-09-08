@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { StoragePoolSummary, StorageAccount } from '../types/account';
 import { UploadRoutingStrategy, UploadRoutingDecision, UploadJob, UploadStatus } from '../types/upload';
-import { formatBytes } from '../lib/formatters';
+import { formatBytes, normalizeFolderId } from '../lib/formatters';
 import { authFetch } from '../lib/api';
 
 interface UploadModalProps {
@@ -36,6 +36,7 @@ interface UploadModalProps {
   onClose: () => void;
   poolSummary: StoragePoolSummary;
   onUploadSuccess?: () => void;
+  targetFolderId?: string | null;
 }
 
 type ModalTab = 'upload' | 'simulate';
@@ -45,6 +46,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   onClose,
   poolSummary,
   onUploadSuccess,
+  targetFolderId,
 }) => {
   const [activeTab, setActiveTab] = useState<ModalTab>('upload');
 
@@ -131,6 +133,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           sizeBytes: selectedFile.size,
           strategy,
           preferredAccountId: strategy === UploadRoutingStrategy.MANUAL ? preferredAccountId : undefined,
+          targetFolderId: targetFolderId ? (normalizeFolderId(targetFolderId) || targetFolderId) : undefined,
         }),
         signal: abortControllerRef.current.signal,
       });

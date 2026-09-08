@@ -1420,7 +1420,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   if (/INSERT INTO virtual_folders/i.test(normalizedSql)) {
     const hasExplicitNullParent = /values\s*\(\s*\$1\s*,\s*\$2\s*,\s*null/i.test(normalizedSql);
     const hasExplicitFalseFlags = /false\s*,\s*false/i.test(normalizedSql);
-    const id = params[0] || `vfol_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const id = params[0] || crypto.randomUUID();
     const user_id = params[1];
     const parent_id = hasExplicitNullParent ? null : (params[2] || null);
     const baseIdx = hasExplicitNullParent ? 2 : 3;

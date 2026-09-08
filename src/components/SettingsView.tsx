@@ -12,10 +12,15 @@ import {
   Sliders,
   Moon,
   Sun,
+  Monitor,
   LayoutGrid,
   List,
   Check,
   FileCheck,
+  Bell,
+  AlertTriangle,
+  HardDrive,
+  Shield,
 } from 'lucide-react';
 import { useTheme } from '../lib/theme';
 import { UploadRoutingStrategy } from '../types/upload';
@@ -51,12 +56,38 @@ export const SettingsView: React.FC = () => {
     return val ? parseInt(val, 10) : 50;
   });
 
+  // Storage Threshold Alerts
+  const [alertThreshold, setAlertThreshold] = useState<number>(() => {
+    const val = localStorage.getItem('unicloud_alert_threshold');
+    return val ? parseInt(val, 10) : 85;
+  });
+
+  const [enableStorageAlerts, setEnableStorageAlerts] = useState<boolean>(() => {
+    const val = localStorage.getItem('unicloud_enable_storage_alerts');
+    return val !== null ? val === 'true' : true;
+  });
+
+  // Notifications
+  const [notifyUploadComplete, setNotifyUploadComplete] = useState<boolean>(() => {
+    const val = localStorage.getItem('unicloud_notify_upload');
+    return val !== null ? val === 'true' : true;
+  });
+
+  const [notifySyncErrors, setNotifySyncErrors] = useState<boolean>(() => {
+    const val = localStorage.getItem('unicloud_notify_sync');
+    return val !== null ? val === 'true' : true;
+  });
+
   const handleSavePreferences = () => {
     localStorage.setItem('unicloud_upload_strategy', strategy);
     localStorage.setItem('unicloud_default_view', defaultViewMode);
     localStorage.setItem('unicloud_view_mode', defaultViewMode);
     localStorage.setItem('unicloud_confirm_delete', String(confirmDelete));
     localStorage.setItem('unicloud_page_size', String(pageSize));
+    localStorage.setItem('unicloud_alert_threshold', String(alertThreshold));
+    localStorage.setItem('unicloud_enable_storage_alerts', String(enableStorageAlerts));
+    localStorage.setItem('unicloud_notify_upload', String(notifyUploadComplete));
+    localStorage.setItem('unicloud_notify_sync', String(notifySyncErrors));
     success('Settings updated successfully.');
   };
 
@@ -66,7 +97,7 @@ export const SettingsView: React.FC = () => {
       <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
         <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Settings</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-          Configure appearance, upload routing policies, and file management preferences.
+          Configure appearance, storage alerts, upload routing policies, and notifications.
         </p>
       </div>
 
@@ -74,17 +105,17 @@ export const SettingsView: React.FC = () => {
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xs space-y-4">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900">
-            {theme === 'dark' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+            {theme === 'dark' ? <Moon className="h-5 w-5" /> : theme === 'light' ? <Sun className="h-5 w-5" /> : <Monitor className="h-5 w-5" />}
           </div>
           <div>
             <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Appearance</h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Customize interface color scheme and readability
+              Customize interface color scheme and theme behavior
             </p>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
           <div
             id="setting-theme-dark"
             onClick={() => setTheme('dark')}
@@ -99,10 +130,8 @@ export const SettingsView: React.FC = () => {
                 <Moon className="h-4 w-4" />
               </div>
               <div>
-                <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                  Dark Mode <span className="text-[10px] text-blue-600 dark:text-blue-400 font-normal">(Default)</span>
-                </p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">Low-glare contrast for focused work</p>
+                <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">Dark Mode</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">Low-glare contrast</p>
               </div>
             </div>
             {theme === 'dark' && <Check className="h-4 w-4 text-blue-600 dark:text-blue-400" />}
@@ -123,15 +152,149 @@ export const SettingsView: React.FC = () => {
               </div>
               <div>
                 <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">Light Mode</p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">Crisp high-clarity day aesthetic</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">Crisp daytime style</p>
               </div>
             </div>
             {theme === 'light' && <Check className="h-4 w-4 text-blue-600 dark:text-blue-400" />}
           </div>
+
+          <div
+            id="setting-theme-system"
+            onClick={() => setTheme('system')}
+            className={`p-4 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
+              theme === 'system'
+                ? 'border-blue-600 bg-blue-50/50 dark:bg-blue-950/40 shadow-2xs ring-1 ring-blue-600/30'
+                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div className="h-8 w-8 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center border border-indigo-500/30 dark:border-indigo-500/20">
+                <Monitor className="h-4 w-4" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">System Sync</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">Follows device OS</p>
+              </div>
+            </div>
+            {theme === 'system' && <Check className="h-4 w-4 text-blue-600 dark:text-blue-400" />}
+          </div>
         </div>
       </div>
 
-      {/* 2. Upload Routing Strategy Card */}
+      {/* 2. Storage Threshold Alerts Card */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xs space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-amber-50 dark:bg-amber-950/70 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-900">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Storage Threshold Alerts</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Receive notifications and visual warnings when storage accounts approach quota limits
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-1 text-xs">
+          <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
+            <div>
+              <p className="font-semibold text-slate-900 dark:text-slate-100">Enable Capacity Warnings</p>
+              <p className="text-slate-500 dark:text-slate-400 text-[11px] mt-0.5">
+                Highlight accounts and pools when utilization exceeds threshold
+              </p>
+            </div>
+            <button
+              type="button"
+              id="btn-toggle-storage-alerts"
+              onClick={() => setEnableStorageAlerts(!enableStorageAlerts)}
+              className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors cursor-pointer ${
+                enableStorageAlerts ? 'bg-amber-500 justify-end' : 'bg-slate-300 dark:bg-slate-700 justify-start'
+              }`}
+            >
+              <span className="bg-white w-4 h-4 rounded-full shadow-md" />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
+            <div>
+              <p className="font-semibold text-slate-900 dark:text-slate-100">Warning Trigger Level</p>
+              <p className="text-slate-500 dark:text-slate-400 text-[11px] mt-0.5">
+                Percentage quota consumed before triggering low-capacity warnings
+              </p>
+            </div>
+            <select
+              id="setting-alert-threshold"
+              value={alertThreshold}
+              disabled={!enableStorageAlerts}
+              onChange={(e) => setAlertThreshold(parseInt(e.target.value, 10))}
+              className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer disabled:opacity-50"
+            >
+              <option value={75}>75% of total quota</option>
+              <option value={80}>80% of total quota</option>
+              <option value={85}>85% of total quota (Recommended)</option>
+              <option value={90}>90% of total quota</option>
+              <option value={95}>95% of total quota (Critical)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. Notification Preferences */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xs space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900">
+            <Bell className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Notifications</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Manage in-app toasts and activity status updates
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-1 text-xs">
+          <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
+            <div>
+              <p className="font-semibold text-slate-900 dark:text-slate-100">Upload Completion Alerts</p>
+              <p className="text-slate-500 dark:text-slate-400 text-[11px] mt-0.5">
+                Notify when large files finish streaming and are mapped to virtual storage
+              </p>
+            </div>
+            <button
+              type="button"
+              id="btn-toggle-notify-upload"
+              onClick={() => setNotifyUploadComplete(!notifyUploadComplete)}
+              className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors cursor-pointer ${
+                notifyUploadComplete ? 'bg-blue-600 justify-end' : 'bg-slate-300 dark:bg-slate-700 justify-start'
+              }`}
+            >
+              <span className="bg-white w-4 h-4 rounded-full shadow-md" />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
+            <div>
+              <p className="font-semibold text-slate-900 dark:text-slate-100">Sync & Token Status Warnings</p>
+              <p className="text-slate-500 dark:text-slate-400 text-[11px] mt-0.5">
+                Notify if a Google Drive account requires OAuth re-authentication
+              </p>
+            </div>
+            <button
+              type="button"
+              id="btn-toggle-notify-sync"
+              onClick={() => setNotifySyncErrors(!notifySyncErrors)}
+              className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors cursor-pointer ${
+                notifySyncErrors ? 'bg-blue-600 justify-end' : 'bg-slate-300 dark:bg-slate-700 justify-start'
+              }`}
+            >
+              <span className="bg-white w-4 h-4 rounded-full shadow-md" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 4. Upload Routing Strategy Card */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xs space-y-4">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900">
@@ -195,7 +358,7 @@ export const SettingsView: React.FC = () => {
         </div>
       </div>
 
-      {/* 3. File Management Preferences */}
+      {/* 5. File Management Preferences */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xs space-y-4">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900">
@@ -224,7 +387,10 @@ export const SettingsView: React.FC = () => {
               <button
                 type="button"
                 id="btn-default-view-list"
-                onClick={() => setDefaultViewMode('list')}
+                onClick={() => {
+                  setDefaultViewMode('list');
+                  localStorage.setItem('unicloud_view_mode', 'list');
+                }}
                 className={`px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
                   defaultViewMode === 'list'
                     ? 'bg-blue-600 text-white shadow-2xs'
@@ -237,7 +403,10 @@ export const SettingsView: React.FC = () => {
               <button
                 type="button"
                 id="btn-default-view-grid"
-                onClick={() => setDefaultViewMode('grid')}
+                onClick={() => {
+                  setDefaultViewMode('grid');
+                  localStorage.setItem('unicloud_view_mode', 'grid');
+                }}
                 className={`px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
                   defaultViewMode === 'grid'
                     ? 'bg-blue-600 text-white shadow-2xs'
