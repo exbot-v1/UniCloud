@@ -84,7 +84,22 @@ export const FilesView: React.FC<FilesViewProps> = ({
   onClearTargetFolder,
   onPreviewFile,
 }) => {
-  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const saved = localStorage.getItem('unicloud_view_mode') as ViewMode;
+    if (saved === 'list' || saved === 'grid') return saved;
+    const defaultSaved = localStorage.getItem('unicloud_default_view') as ViewMode;
+    if (defaultSaved === 'list' || defaultSaved === 'grid') return defaultSaved;
+    return 'list';
+  });
+
+  const handleSetViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem('unicloud_view_mode', mode);
+    } catch {
+      // ignore
+    }
+  };
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbNode[]>([
     { id: null, name: tabTitle },
@@ -442,15 +457,31 @@ export const FilesView: React.FC<FilesViewProps> = ({
   };
 
   // Action: Direct binary download
-  const handleDownloadFile = (file: VirtualFile, e?: React.MouseEvent) => {
+  const handleDownloadFile = async (file: VirtualFile, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const downloadUrl = `/api/files/${file.id}/download`;
-    const anchor = document.createElement('a');
-    anchor.href = downloadUrl;
-    anchor.download = file.name;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
+    try {
+      const res = await authFetch(`/api/files/${file.id}/download`);
+      if (!res.ok) {
+        throw new Error(`Download failed with status ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = file.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      const downloadUrl = `/api/files/${file.id}/download`;
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = file.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+    }
   };
 
   // Action: Trigger preview modal
@@ -624,11 +655,12 @@ export const FilesView: React.FC<FilesViewProps> = ({
   // Action: Create virtual folder
   const handleCreateFolderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newFolderName.trim()) return;
+    if (!newFolderName.trim() || isCreatingFolderSubmitting) return;
 
     setIsCreatingFolderSubmitting(true);
     try {
-      const targetAccountId = accounts[0]?.id;
+      const parentFolder = currentFolderId ? rawFolders.find((f) => f.id === currentFolderId) : null;
+      const targetAccountId = parentFolder?.storageAccountId || accounts[0]?.id;
       const res = await authFetch('/api/folders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -639,17 +671,19 @@ export const FilesView: React.FC<FilesViewProps> = ({
         }),
       });
 
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success && json.data) {
-          setRealFolders((prev) => [...prev, json.data]);
-          setNewFolderName('');
-          setIsCreatingFolder(false);
-          success(`Created folder "${newFolderName.trim()}".`);
-        }
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success && json.data) {
+        setRealFolders((prev) => [...prev, json.data]);
+        setNewFolderName('');
+        setIsCreatingFolder(false);
+        success(`Created folder "${newFolderName.trim()}".`);
+        fetchFilesystemData(currentFolderId);
+      } else {
+        error(json.error?.message || `Failed to create folder (${res.status})`);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to create folder', err);
+      error(err.message || 'Error creating folder.');
     } finally {
       setIsCreatingFolderSubmitting(false);
     }
@@ -762,7 +796,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
           {/* View Mode Switcher */}
           <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg">
             <button
-              onClick={() => setViewMode('list')}
+              onClick={() => handleSetViewMode('list')}
               aria-label="List View"
               className={cn(
                 'p-1.5 rounded-md transition-colors cursor-pointer',
@@ -772,7 +806,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
               <List className="h-4 w-4" />
             </button>
             <button
-              onClick={() => setViewMode('grid')}
+              onClick={() => handleSetViewMode('grid')}
               aria-label="Grid View"
               className={cn(
                 'p-1.5 rounded-md transition-colors cursor-pointer',
@@ -859,11 +893,13 @@ export const FilesView: React.FC<FilesViewProps> = ({
           <div className={cn(selectedFile ? 'lg:col-span-3' : 'lg:col-span-4', 'space-y-6')}>
             {/* Folders Section */}
             {filteredFolders.length > 0 && (
-              <div className="space-y-2.5">
-                <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  Folders ({filteredFolders.length})
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Folders ({filteredFolders.length})
+                  </h3>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
                   {filteredFolders.map((folder) => {
                     const isSelected = selectedFolder?.id === folder.id;
                     const folderAccount = accounts.find((a) => a.id === folder.storageAccountId);
@@ -877,41 +913,39 @@ export const FilesView: React.FC<FilesViewProps> = ({
                         onDoubleClick={() => handleNavigateFolder(folder)}
                         onContextMenu={(e) => handleContextMenu(e, folder)}
                         className={cn(
-                          'p-3.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between group select-none',
+                          'px-3 py-2 rounded-lg border transition-all cursor-pointer flex items-center justify-between group select-none',
                           isSelected
-                            ? 'border-blue-600 bg-blue-50/60 dark:bg-blue-950/40 shadow-xs ring-1 ring-blue-600'
-                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xs'
+                            ? 'border-blue-600 bg-blue-50/60 dark:bg-blue-950/40 ring-1 ring-blue-600'
+                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50/50 dark:hover:bg-slate-800/40'
                         )}
                       >
                         <div
-                          className="flex items-center gap-3 min-w-0 flex-1"
+                          className="flex items-center gap-2.5 min-w-0 flex-1"
                           onClick={(e) => {
-                            // Single click on text or icon directly navigates if clicked directly
                             e.stopPropagation();
                             handleNavigateFolder(folder);
                           }}
                         >
-                          <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 shrink-0 border border-blue-100/70 dark:border-blue-900/70">
-                            <Folder className="h-4 w-4 fill-blue-600/20 dark:fill-blue-400/20" />
-                          </div>
+                          <Folder className="h-4 w-4 text-blue-600 dark:text-blue-400 fill-blue-500/20 shrink-0" />
                           <div className="min-w-0 flex-1">
-                            <p className="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">{folder.name}</p>
-                            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                              {folder.itemCount !== undefined ? `${folder.itemCount} items` : 'Folder'}
-                              {folderAccount ? ` • ${folderAccount.email.split('@')[0]}` : ''}
+                            <p className="text-xs font-medium text-slate-800 dark:text-slate-200 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                              {folder.name}
                             </p>
+                            {folderAccount && (
+                              <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate">
+                                {folderAccount.email.split('@')[0]}
+                              </p>
+                            )}
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={(e) => handleOpenActionMenu(e, folder)}
-                            title="Folder options"
-                            className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                          >
-                            <MoreVertical className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
+                        <button
+                          onClick={(e) => handleOpenActionMenu(e, folder)}
+                          title="Folder options"
+                          className="p-1 rounded text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                        >
+                          <MoreVertical className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     );
                   })}
@@ -925,9 +959,11 @@ export const FilesView: React.FC<FilesViewProps> = ({
                 <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   Files ({filteredFiles.length})
                 </h3>
-                <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                  Select a file to view storage details
-                </span>
+                {filteredFiles.length > 0 && (
+                  <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                    Select a file to view storage details
+                  </span>
+                )}
               </div>
 
               {filteredFiles.length === 0 && filteredFolders.length === 0 ? (
@@ -953,6 +989,22 @@ export const FilesView: React.FC<FilesViewProps> = ({
                   </p>
                   {activeView === 'files' && (
                     <div className="mt-4 flex items-center justify-center gap-2">
+                      <button
+                        onClick={onOpenUpload}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-2xs cursor-pointer"
+                      >
+                        <Upload className="h-3.5 w-3.5" />
+                        <span>Upload to this folder</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : filteredFiles.length === 0 ? (
+                <div className="py-8 px-4 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60">
+                  <p className="text-xs font-medium text-slate-600 dark:text-slate-400">No files in this folder</p>
+                  <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">Upload files or drop them here to add to this folder.</p>
+                  {activeView === 'files' && (
+                    <div className="mt-3 flex items-center justify-center">
                       <button
                         onClick={onOpenUpload}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-2xs cursor-pointer"
@@ -1340,7 +1392,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                   value={newFolderName}
                   onChange={(e) => setNewFolderName(e.target.value)}
                   placeholder="e.g. Documents"
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:bg-white dark:focus:bg-slate-850 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
@@ -1390,7 +1442,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
                   autoFocus
                   value={renameValue}
                   onChange={(e) => setRenameValue(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:bg-white dark:focus:bg-slate-850 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 

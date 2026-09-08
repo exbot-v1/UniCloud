@@ -438,24 +438,61 @@ export class FileService {
   }
 
   /**
-   * Retrieves file content Buffer or upstream redirectUrl for file download and preview.
+   * Streams file content directly for bounded-memory file streaming, preview, and download.
    */
-  async downloadFile(
+  async downloadFileStream(
     userId: string,
     fileId: string
-  ): Promise<{ file: VirtualFile; content?: Buffer; redirectUrl?: string }> {
+  ): Promise<{ file: VirtualFile; stream?: any; content?: Buffer; contentType: string; contentLength?: number }> {
     const file = await this.getFileById(userId, fileId);
 
     try {
       const accessToken = await accountService.getValidAccessToken(userId, file.storageAccountId);
       const provider = ProviderRegistry.get(file.provider);
-      const content = await provider.downloadFileContent(accessToken, file.providerFileId);
-      return { file, content };
+      if (provider.downloadFileStream) {
+        const result = await provider.downloadFileStream(accessToken, file.providerFileId, file.mimeType);
+        return {
+          file,
+          stream: result.stream,
+          contentType: result.contentType || file.mimeType || 'application/octet-stream',
+          contentLength: result.contentLength || file.sizeBytes,
+        };
+      }
+      if (provider.downloadFileContent) {
+        const content = await provider.downloadFileContent(accessToken, file.providerFileId);
+        return {
+          file,
+          content,
+          contentType: file.mimeType || 'application/octet-stream',
+          contentLength: content.length,
+        };
+      }
+      throw new AppError(ErrorCode.PROVIDER_ERROR, 'Provider does not support file downloading.', 500);
+    } catch (err: any) {
+      logger.warn(`File download failed for file ${fileId}: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Retrieves file content Buffer for file download and preview.
+   */
+  async downloadFile(
+    userId: string,
+    fileId: string
+  ): Promise<{ file: VirtualFile; content?: Buffer }> {
+    const file = await this.getFileById(userId, fileId);
+
+    try {
+      const accessToken = await accountService.getValidAccessToken(userId, file.storageAccountId);
+      const provider = ProviderRegistry.get(file.provider);
+      if (provider.downloadFileContent) {
+        const content = await provider.downloadFileContent(accessToken, file.providerFileId);
+        return { file, content };
+      }
+      throw new AppError(ErrorCode.PROVIDER_ERROR, 'Provider does not support buffer download.', 500);
     } catch (err: any) {
       logger.warn(`Direct download failed for file ${fileId}: ${err.message}`);
-      if (file.webUrl) {
-        return { file, redirectUrl: file.webUrl };
-      }
       throw err;
     }
   }

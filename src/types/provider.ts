@@ -188,6 +188,15 @@ export interface StorageProvider {
   downloadFileContent?(accessToken: string, providerFileId: string): Promise<Buffer>;
 
   /**
+   * Streams file content for bounded-memory file transfer, preview, and download.
+   */
+  downloadFileStream?(
+    accessToken: string,
+    providerFileId: string,
+    mimeType?: string
+  ): Promise<{ stream: any; contentType: string; contentLength?: number }>;
+
+  /**
    * Simple upload of file content buffer (Phase 5)
    */
   uploadSimpleFile?(

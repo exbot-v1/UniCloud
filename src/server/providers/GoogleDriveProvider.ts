@@ -1028,6 +1028,51 @@ export class GoogleDriveProvider implements StorageProvider {
   }
 
   /**
+   * Streams file content directly from Google Drive API for bounded-memory download and preview.
+   */
+  async downloadFileStream(
+    accessToken: string,
+    providerFileId: string,
+    mimeType?: string
+  ): Promise<{ stream: any; contentType: string; contentLength?: number }> {
+    const client = this.getOAuth2Client();
+    client.setCredentials({ access_token: accessToken });
+    const drive: drive_v3.Drive = google.drive({ version: 'v3', auth: client as any });
+
+    try {
+      // Export Google Docs, Sheets, and Slides to PDF
+      if (
+        mimeType === 'application/vnd.google-apps.document' ||
+        mimeType === 'application/vnd.google-apps.spreadsheet' ||
+        mimeType === 'application/vnd.google-apps.presentation'
+      ) {
+        const res = await drive.files.export(
+          { fileId: providerFileId, mimeType: 'application/pdf' },
+          { responseType: 'stream' }
+        );
+        return {
+          stream: res.data,
+          contentType: 'application/pdf',
+        };
+      }
+
+      const res = await drive.files.get(
+        { fileId: providerFileId, alt: 'media' },
+        { responseType: 'stream' }
+      );
+      const contentType = (res.headers && res.headers['content-type']) || mimeType || 'application/octet-stream';
+      const contentLength = res.headers && res.headers['content-length'] ? Number(res.headers['content-length']) : undefined;
+      return {
+        stream: res.data,
+        contentType,
+        contentLength,
+      };
+    } catch (err: any) {
+      throw new AppError(ErrorCode.PROVIDER_ERROR, `Failed to stream Google Drive file: ${err.message}`, 502);
+    }
+  }
+
+  /**
    * Simple upload of file content Buffer (Phase 5).
    */
   async uploadSimpleFile(

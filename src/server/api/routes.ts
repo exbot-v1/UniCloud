@@ -889,18 +889,22 @@ apiRouter.get('/files/:id', requireAuth, async (req: Request, res: Response) => 
 
 /**
  * GET /api/files/:id/download
- * Downloads file binary content directly or redirects to provider webUrl
+ * Downloads file binary content directly through authenticated UniCloud API
  */
 apiRouter.get('/files/:id/download', requireAuth, async (req: Request, res: Response) => {
   try {
-    const result = await fileService.downloadFile(req.user!.id, req.params.id);
-    if (result.redirectUrl && !result.content) {
-      return res.redirect(result.redirectUrl);
+    const result = await fileService.downloadFileStream(req.user!.id, req.params.id);
+    const filename = encodeURIComponent(result.file.name);
+    res.setHeader('Content-Type', result.contentType || result.file.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${filename}`);
+    if (result.contentLength) {
+      res.setHeader('Content-Length', result.contentLength);
+    }
+
+    if (result.stream) {
+      return result.stream.pipe(res);
     }
     if (result.content) {
-      res.setHeader('Content-Type', result.file.mimeType || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(result.file.name)}"`);
-      res.setHeader('Content-Length', result.content.length);
       return res.send(result.content);
     }
     res.status(404).json({ success: false, error: { message: 'File content unavailable' } });
@@ -915,14 +919,18 @@ apiRouter.get('/files/:id/download', requireAuth, async (req: Request, res: Resp
  */
 apiRouter.get('/files/:id/content', requireAuth, async (req: Request, res: Response) => {
   try {
-    const result = await fileService.downloadFile(req.user!.id, req.params.id);
-    if (result.redirectUrl && !result.content) {
-      return res.redirect(result.redirectUrl);
+    const result = await fileService.downloadFileStream(req.user!.id, req.params.id);
+    const filename = encodeURIComponent(result.file.name);
+    res.setHeader('Content-Type', result.contentType || result.file.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    if (result.contentLength) {
+      res.setHeader('Content-Length', result.contentLength);
+    }
+
+    if (result.stream) {
+      return result.stream.pipe(res);
     }
     if (result.content) {
-      res.setHeader('Content-Type', result.file.mimeType || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(result.file.name)}"`);
-      res.setHeader('Content-Length', result.content.length);
       return res.send(result.content);
     }
     res.status(404).json({ success: false, error: { message: 'File content unavailable' } });

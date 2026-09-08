@@ -3,28 +3,21 @@
  * SPDX-License-Identifier: Apache-2.0
  * 
  * UniCloud Settings View
- * Production-quality preferences for theme, upload routing policy,
- * file management defaults, and security overview.
+ * Genuine user-configurable preferences for theme, upload routing policy,
+ * and file management defaults.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
-  Settings,
-  ShieldCheck,
   Sliders,
-  Lock,
-  KeyRound,
-  CheckCircle2,
   Moon,
   Sun,
   LayoutGrid,
   List,
   Check,
-  Eye,
   FileCheck,
-  Info,
 } from 'lucide-react';
-import { useTheme, Theme } from '../lib/theme';
+import { useTheme } from '../lib/theme';
 import { UploadRoutingStrategy } from '../types/upload';
 import { useToast } from './Toast';
 
@@ -61,6 +54,7 @@ export const SettingsView: React.FC = () => {
   const handleSavePreferences = () => {
     localStorage.setItem('unicloud_upload_strategy', strategy);
     localStorage.setItem('unicloud_default_view', defaultViewMode);
+    localStorage.setItem('unicloud_view_mode', defaultViewMode);
     localStorage.setItem('unicloud_confirm_delete', String(confirmDelete));
     localStorage.setItem('unicloud_page_size', String(pageSize));
     success('Settings updated successfully.');
@@ -92,6 +86,7 @@ export const SettingsView: React.FC = () => {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
           <div
+            id="setting-theme-dark"
             onClick={() => setTheme('dark')}
             className={`p-4 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
               theme === 'dark'
@@ -100,7 +95,7 @@ export const SettingsView: React.FC = () => {
             }`}
           >
             <div className="flex items-center gap-3">
-              <div className="h-8 w-8 rounded-lg bg-slate-900 text-slate-100 flex items-center justify-center border border-slate-800">
+              <div className="h-8 w-8 rounded-lg bg-slate-800 text-slate-200 flex items-center justify-center border border-slate-700">
                 <Moon className="h-4 w-4" />
               </div>
               <div>
@@ -114,6 +109,7 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div
+            id="setting-theme-light"
             onClick={() => setTheme('light')}
             className={`p-4 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
               theme === 'light'
@@ -122,7 +118,7 @@ export const SettingsView: React.FC = () => {
             }`}
           >
             <div className="flex items-center gap-3">
-              <div className="h-8 w-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center border border-amber-200">
+              <div className="h-8 w-8 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center border border-amber-500/30 dark:border-amber-500/20">
                 <Sun className="h-4 w-4" />
               </div>
               <div>
@@ -171,6 +167,7 @@ export const SettingsView: React.FC = () => {
           ].map((item) => (
             <div
               key={item.id}
+              id={`setting-strategy-${item.id}`}
               onClick={() => setStrategy(item.id)}
               className={`p-4 rounded-xl border cursor-pointer transition-all space-y-2 ${
                 strategy === item.id
@@ -209,14 +206,14 @@ export const SettingsView: React.FC = () => {
               File Management Defaults
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Customize default layouts and safety confirmations
+              Customize default layouts, page sizes, and safety confirmations
             </p>
           </div>
         </div>
 
         <div className="space-y-3 pt-1 text-xs">
           {/* Default View Mode */}
-          <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50">
+          <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
             <div>
               <p className="font-semibold text-slate-900 dark:text-slate-100">Default View Mode</p>
               <p className="text-slate-500 dark:text-slate-400 text-[11px] mt-0.5">
@@ -226,6 +223,7 @@ export const SettingsView: React.FC = () => {
             <div className="flex items-center gap-1 bg-white dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
               <button
                 type="button"
+                id="btn-default-view-list"
                 onClick={() => setDefaultViewMode('list')}
                 className={`px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
                   defaultViewMode === 'list'
@@ -238,6 +236,7 @@ export const SettingsView: React.FC = () => {
               </button>
               <button
                 type="button"
+                id="btn-default-view-grid"
                 onClick={() => setDefaultViewMode('grid')}
                 className={`px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
                   defaultViewMode === 'grid'
@@ -251,8 +250,28 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
 
+          {/* Items Per Page */}
+          <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
+            <div>
+              <p className="font-semibold text-slate-900 dark:text-slate-100">Items Per Page</p>
+              <p className="text-slate-500 dark:text-slate-400 text-[11px] mt-0.5">
+                Number of files loaded per view batch
+              </p>
+            </div>
+            <select
+              id="setting-page-size"
+              value={pageSize}
+              onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+            >
+              <option value={25}>25 items</option>
+              <option value={50}>50 items</option>
+              <option value={100}>100 items</option>
+            </select>
+          </div>
+
           {/* Confirm Permanent Delete Toggle */}
-          <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50">
+          <div className="flex items-center justify-between p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
             <div>
               <p className="font-semibold text-slate-900 dark:text-slate-100">
                 Confirm Permanent Deletion
@@ -263,6 +282,7 @@ export const SettingsView: React.FC = () => {
             </div>
             <button
               type="button"
+              id="btn-toggle-confirm-delete"
               onClick={() => setConfirmDelete(!confirmDelete)}
               className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors cursor-pointer ${
                 confirmDelete ? 'bg-blue-600 justify-end' : 'bg-slate-300 dark:bg-slate-700 justify-start'
@@ -274,54 +294,10 @@ export const SettingsView: React.FC = () => {
         </div>
       </div>
 
-      {/* 4. Security & Privacy Overview */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xs space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900">
-            <ShieldCheck className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Security &amp; Token Encryption
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Zero-client exposure architecture and data security guarantees
-            </p>
-          </div>
-        </div>
-
-        <div className="space-y-3 pt-1 text-xs">
-          <div className="flex items-start gap-3 p-3.5 rounded-lg bg-slate-50/50 dark:bg-slate-850/50 border border-slate-200 dark:border-slate-800">
-            <Lock className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold text-slate-900 dark:text-slate-100">
-                AES-256-GCM Token Encryption
-              </p>
-              <p className="text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed text-[11px]">
-                All OAuth refresh tokens are encrypted at rest using 256-bit symmetric AES-GCM
-                with unique initialization vectors before storage.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-start gap-3 p-3.5 rounded-lg bg-slate-50/50 dark:bg-slate-850/50 border border-slate-200 dark:border-slate-800">
-            <KeyRound className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold text-slate-900 dark:text-slate-100">
-                Zero Client Token Exposure
-              </p>
-              <p className="text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed text-[11px]">
-                Google Drive access tokens and credentials remain strictly contained on the backend.
-                The browser client only communicates with the authenticated UniCloud session API.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
       {/* Save Button */}
       <div className="flex justify-end pt-2">
         <button
+          id="btn-save-settings"
           onClick={handleSavePreferences}
           className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg text-xs shadow-xs transition-colors cursor-pointer"
         >

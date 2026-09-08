@@ -1074,12 +1074,70 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   if (/SELECT .* FROM virtual_files WHERE user_id =/i.test(normalizedSql)) {
     const userId = params[0];
-    const files: any[] = [];
+    let files: any[] = [];
     for (const f of memoryDb.virtualFiles.values()) {
       if (f.user_id === userId) {
         files.push(f);
       }
     }
+
+    // Filter trashed
+    if (/is_trashed = true/i.test(normalizedSql)) {
+      files = files.filter(f => f.is_trashed === true);
+    } else if (/is_trashed = false/i.test(normalizedSql)) {
+      files = files.filter(f => !f.is_trashed);
+    }
+
+    // Filter starred
+    if (/is_starred = true/i.test(normalizedSql)) {
+      files = files.filter(f => f.is_starred === true);
+    }
+
+    // Filter parent_id
+    if (/parent_id IS NULL/i.test(normalizedSql)) {
+      files = files.filter(f => !f.parent_id);
+    } else if (/parent_id =/i.test(normalizedSql)) {
+      const pMatch = normalizedSql.match(/parent_id = \$(\d+)/i);
+      if (pMatch) {
+        const pIndex = parseInt(pMatch[1], 10) - 1;
+        const targetParentId = params[pIndex];
+        files = files.filter(f => f.parent_id === targetParentId);
+      }
+    }
+
+    // Filter storage_account_id
+    const accMatch = normalizedSql.match(/storage_account_id = \$(\d+)/i);
+    if (accMatch) {
+      const pIndex = parseInt(accMatch[1], 10) - 1;
+      const targetAccId = params[pIndex];
+      files = files.filter(f => f.storage_account_id === targetAccId);
+    }
+
+    // Filter name ILIKE
+    const nameMatch = normalizedSql.match(/name ILIKE \$(\d+)/i);
+    if (nameMatch) {
+      const pIndex = parseInt(nameMatch[1], 10) - 1;
+      const term = String(params[pIndex] || '').replace(/%/g, '').toLowerCase();
+      files = files.filter(f => (f.name || '').toLowerCase().includes(term));
+    }
+
+    // Sort
+    if (/ORDER BY updated_at DESC/i.test(normalizedSql)) {
+      files.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+    } else {
+      files.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    }
+
+    // Limit
+    const limitMatch = normalizedSql.match(/LIMIT \$(\d+)/i);
+    if (limitMatch) {
+      const pIndex = parseInt(limitMatch[1], 10) - 1;
+      const limitVal = parseInt(params[pIndex], 10);
+      if (!isNaN(limitVal)) {
+        files = files.slice(0, limitVal);
+      }
+    }
+
     return { rows: files as any[], rowCount: files.length };
   }
 
@@ -1361,6 +1419,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   if (/INSERT INTO virtual_folders/i.test(normalizedSql)) {
     const hasExplicitNullParent = /values\s*\(\s*\$1\s*,\s*\$2\s*,\s*null/i.test(normalizedSql);
+    const hasExplicitFalseFlags = /false\s*,\s*false/i.test(normalizedSql);
     const id = params[0] || `vfol_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const user_id = params[1];
     const parent_id = hasExplicitNullParent ? null : (params[2] || null);
@@ -1370,8 +1429,8 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     const provider = params[baseIdx + 1] || 'google_drive';
     const provider_folder_id = params[baseIdx + 2] || null;
     const name = params[baseIdx + 3];
-    const is_starred = Boolean(params[baseIdx + 4]);
-    const is_trashed = Boolean(params[baseIdx + 5]);
+    const is_starred = hasExplicitFalseFlags ? false : Boolean(params[baseIdx + 4]);
+    const is_trashed = hasExplicitFalseFlags ? false : Boolean(params[baseIdx + 5]);
 
     // Check for conflict on (storage_account_id, provider_folder_id)
     let existingFolder: any = null;
@@ -1412,12 +1471,41 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
 
   if (/SELECT .* FROM virtual_folders WHERE user_id =/i.test(normalizedSql)) {
     const userId = params[0];
-    const folders: any[] = [];
+    let folders: any[] = [];
     for (const fol of memoryDb.virtualFolders.values()) {
       if (fol.user_id === userId) {
         folders.push(fol);
       }
     }
+
+    // Filter is_trashed
+    if (/is_trashed = \$2/i.test(normalizedSql)) {
+      const isTrashed = params[1] === true;
+      folders = folders.filter(f => Boolean(f.is_trashed) === isTrashed);
+    } else if (/is_trashed = true/i.test(normalizedSql)) {
+      folders = folders.filter(f => f.is_trashed === true);
+    } else if (/is_trashed = false/i.test(normalizedSql)) {
+      folders = folders.filter(f => !f.is_trashed);
+    }
+
+    // Filter is_starred
+    if (/is_starred = true/i.test(normalizedSql)) {
+      folders = folders.filter(f => f.is_starred === true);
+    }
+
+    // Filter parent_id
+    if (/parent_id IS NULL/i.test(normalizedSql)) {
+      folders = folders.filter(f => !f.parent_id);
+    } else if (/parent_id =/i.test(normalizedSql)) {
+      const pMatch = normalizedSql.match(/parent_id = \$(\d+)/i);
+      if (pMatch) {
+        const pIndex = parseInt(pMatch[1], 10) - 1;
+        const targetParentId = params[pIndex];
+        folders = folders.filter(f => f.parent_id === targetParentId);
+      }
+    }
+
+    folders.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     return { rows: folders as any[], rowCount: folders.length };
   }
 

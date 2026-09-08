@@ -123,15 +123,30 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
   if (!isOpen || !file) return null;
 
-  const handleDownload = () => {
-    // Trigger download via /api/files/:id/download
-    const downloadUrl = `/api/files/${file.id}/download`;
-    const anchor = document.createElement('a');
-    anchor.href = downloadUrl;
-    anchor.download = file.name;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
+  const handleDownload = async () => {
+    try {
+      const res = await authFetch(`/api/files/${file.id}/download`);
+      if (!res.ok) {
+        throw new Error(`Download failed with status ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = file.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      const downloadUrl = `/api/files/${file.id}/download`;
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = file.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+    }
   };
 
   const handleCopyText = () => {
