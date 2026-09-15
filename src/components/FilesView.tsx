@@ -44,7 +44,7 @@ import {
 } from 'lucide-react';
 import { VirtualFile, VirtualFolder, ViewMode } from '../types/filesystem';
 import { StorageAccount } from '../types/account';
-import { cn, formatBytes, formatDate } from '../lib/formatters';
+import { cn, formatBytes, formatDate, normalizeFolderId } from '../lib/formatters';
 import { authFetch } from '../lib/api';
 import { useToast } from './Toast';
 import { FilePreviewModal } from './FilePreviewModal';
@@ -181,10 +181,11 @@ export const FilesView: React.FC<FilesViewProps> = ({
   // Navigate to target folder when requested by external search
   useEffect(() => {
     if (targetFolderToOpen) {
-      setCurrentFolderId(targetFolderToOpen.id);
+      const cleanId = normalizeFolderId(targetFolderToOpen.id) || targetFolderToOpen.id;
+      setCurrentFolderId(cleanId);
       setBreadcrumbs([
         { id: null, name: tabTitle },
-        { id: targetFolderToOpen.id, name: targetFolderToOpen.name },
+        { id: cleanId, name: targetFolderToOpen.name },
       ]);
       setSelectedFile(null);
       setSelectedFolder(null);
@@ -490,8 +491,9 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
   // Navigate down into a folder
   const handleNavigateFolder = (folder: VirtualFolder) => {
-    setCurrentFolderId(folder.id);
-    setBreadcrumbs((prev) => [...prev, { id: folder.id, name: folder.name }]);
+    const cleanId = normalizeFolderId(folder.id) || folder.id;
+    setCurrentFolderId(cleanId);
+    setBreadcrumbs((prev) => [...prev, { id: cleanId, name: folder.name }]);
     setSelectedFile(null);
     setActionMenuId(null);
   };
@@ -499,7 +501,8 @@ export const FilesView: React.FC<FilesViewProps> = ({
   // Navigate to a specific level in breadcrumbs
   const handleNavigateBreadcrumb = (index: number) => {
     const target = breadcrumbs[index];
-    setCurrentFolderId(target.id);
+    const cleanId = target.id ? (normalizeFolderId(target.id) || target.id) : null;
+    setCurrentFolderId(cleanId);
     setBreadcrumbs((prev) => prev.slice(0, index + 1));
     setSelectedFile(null);
     setActionMenuId(null);
@@ -510,7 +513,8 @@ export const FilesView: React.FC<FilesViewProps> = ({
     if (breadcrumbs.length <= 1) return;
     const nextBreadcrumbs = breadcrumbs.slice(0, -1);
     const parentNode = nextBreadcrumbs[nextBreadcrumbs.length - 1];
-    setCurrentFolderId(parentNode.id);
+    const cleanId = parentNode.id ? (normalizeFolderId(parentNode.id) || parentNode.id) : null;
+    setCurrentFolderId(cleanId);
     setBreadcrumbs(nextBreadcrumbs);
     setSelectedFile(null);
     setActionMenuId(null);
@@ -788,14 +792,17 @@ export const FilesView: React.FC<FilesViewProps> = ({
 
     setIsCreatingFolderSubmitting(true);
     try {
-      const parentFolder = currentFolderId ? rawFolders.find((f) => f.id === currentFolderId) : null;
+      const cleanParentId = currentFolderId ? normalizeFolderId(currentFolderId) : null;
+      const parentFolder = cleanParentId
+        ? rawFolders.find((f) => (normalizeFolderId(f.id) || f.id) === cleanParentId)
+        : null;
       const targetAccountId = parentFolder?.storageAccountId || accounts[0]?.id;
       const res = await authFetch('/api/folders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: newFolderName.trim(),
-          parentId: currentFolderId,
+          parentId: cleanParentId,
           storageAccountId: targetAccountId,
         }),
       });
@@ -806,7 +813,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
         setNewFolderName('');
         setIsCreatingFolder(false);
         success(`Created folder "${newFolderName.trim()}".`);
-        fetchFilesystemData(currentFolderId);
+        fetchFilesystemData(cleanParentId);
       } else {
         error(json.error?.message || `Failed to create folder (${res.status})`);
       }

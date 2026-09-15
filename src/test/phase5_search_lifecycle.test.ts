@@ -362,6 +362,53 @@ describe('UniCloud Phase 5 — Unified Search & Storage Lifecycle', () => {
     assert.strictEqual(restoredFolder.isTrashed, false);
   });
 
+  test('Folder creation: raw UUID and prefixed parent ID normalization', async () => {
+    // 1. Root folder creation has null parentId and a valid raw UUID id
+    const rootFolder = await fileService.createFolder(USER_A, {
+      name: 'Root Documents',
+      parentId: null,
+      storageAccountId: ACC_A1,
+    });
+    assert.ok(rootFolder.id);
+    assert.match(rootFolder.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    assert.strictEqual(rootFolder.parentId, null);
+
+    // 2. Subfolder creation with standard raw UUID
+    const subFolder1 = await fileService.createFolder(USER_A, {
+      name: 'Subfolder Standard',
+      parentId: rootFolder.id,
+      storageAccountId: ACC_A1,
+    });
+    assert.ok(subFolder1.id);
+    assert.strictEqual(subFolder1.parentId, rootFolder.id);
+    assert.match(subFolder1.parentId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+
+    // 3. Subfolder creation with "vfol " prefix (as reported in bug: "vfol <uuid>")
+    const prefixedParentId = `vfol ${rootFolder.id}`;
+    const subFolderPrefixed = await fileService.createFolder(USER_A, {
+      name: 'Subfolder With Prefixed Parent',
+      parentId: prefixedParentId,
+      storageAccountId: ACC_A1,
+    });
+    assert.ok(subFolderPrefixed.id);
+    // Database must store the raw UUID, NOT "vfol <uuid>"
+    assert.strictEqual(subFolderPrefixed.parentId, rootFolder.id);
+    assert.doesNotMatch(subFolderPrefixed.parentId || '', /^vfol/i);
+
+    // Verify directly in DB query that parent_id is the pure raw UUID
+    const dbCheck = await query<{ parent_id: string }>(
+      'SELECT parent_id FROM virtual_folders WHERE id = $1',
+      [subFolderPrefixed.id]
+    );
+    assert.strictEqual(dbCheck.rows[0].parent_id, rootFolder.id);
+
+    // 4. Listing contents in parent folder includes the newly created subfolders
+    const contents = await fileService.getFoldersInFolder(USER_A, rootFolder.id);
+    const names = contents.map((f) => f.name);
+    assert.ok(names.includes('Subfolder Standard'));
+    assert.ok(names.includes('Subfolder With Prefixed Parent'));
+  });
+
   // 3. Cross-Account Move & Copy
   test('Intra-account move updates folder parent without changing storage account', async () => {
     const folder = await fileService.createFolder(USER_A, {
