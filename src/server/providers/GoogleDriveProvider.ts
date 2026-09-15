@@ -340,13 +340,20 @@ export class GoogleDriveProvider implements StorageProvider {
           }
 
           const parents = Array.isArray(f.parents) ? f.parents : [];
+          const parentFolderId = parents.length > 0
+            ? parents[0]
+            : (options?.folderId && options.folderId !== 'root' ? options.folderId : null);
+          const parentFolderIds = parents.length > 0
+            ? parents
+            : (options?.folderId && options.folderId !== 'root' ? [options.folderId] : []);
+
           pageFiles.push({
             providerFileId: f.id || '',
             name: f.name || 'Untitled',
             mimeType: f.mimeType || 'application/octet-stream',
             sizeBytes: f.size ? Number(f.size) : 0,
-            parentFolderId: parents.length > 0 ? parents[0] : null,
-            parentFolderIds: parents,
+            parentFolderId,
+            parentFolderIds,
             isFolder: f.mimeType === 'application/vnd.google-apps.folder',
             webUrl: f.webViewLink || undefined,
             md5Checksum: f.md5Checksum || undefined,
@@ -388,6 +395,36 @@ export class GoogleDriveProvider implements StorageProvider {
         502
       );
     }
+  }
+
+  /**
+   * Authoritatively queries direct child files and folders of a specific Google Drive folder.
+   * Uses paginated Google Drive files.list with `'<folderId>' in parents`.
+   * Strictly enforces ownership: only owned, non-trashed items are returned.
+   */
+  async listFilesInFolder(
+    accessToken: string,
+    folderId: string,
+    options?: Omit<ProviderFileListOptions, 'folderId'>
+  ): Promise<ProviderFileListResult> {
+    const effectiveFolderId = folderId || 'root';
+    return this.listFiles(accessToken, {
+      ...options,
+      folderId: effectiveFolderId,
+      pageSize: Math.min(options?.pageSize || 100, 100),
+      fetchAllPages: options?.fetchAllPages ?? true,
+    });
+  }
+
+  /**
+   * Alias for authoritative direct child listing
+   */
+  async listFolderChildren(
+    accessToken: string,
+    folderId: string,
+    options?: Omit<ProviderFileListOptions, 'folderId'>
+  ): Promise<ProviderFileListResult> {
+    return this.listFilesInFolder(accessToken, folderId, options);
   }
 
   /**

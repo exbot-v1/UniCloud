@@ -277,6 +277,7 @@ export async function ensureSchema(): Promise<void> {
       );
 
       CREATE INDEX IF NOT EXISTS idx_virtual_folders_user_parent ON virtual_folders(user_id, parent_id);
+      CREATE INDEX IF NOT EXISTS idx_virtual_folders_user_parent_trashed ON virtual_folders(user_id, parent_id, is_trashed);
       CREATE UNIQUE INDEX IF NOT EXISTS uq_virtual_folders_account_provider ON virtual_folders (storage_account_id, provider_folder_id);
 
       CREATE TABLE IF NOT EXISTS virtual_files (
@@ -304,6 +305,7 @@ export async function ensureSchema(): Promise<void> {
       );
 
       CREATE INDEX IF NOT EXISTS idx_virtual_files_user_parent ON virtual_files(user_id, parent_id);
+      CREATE INDEX IF NOT EXISTS idx_virtual_files_user_parent_trashed ON virtual_files(user_id, parent_id, is_trashed);
 
       CREATE TABLE IF NOT EXISTS oauth_states (
         state_id VARCHAR(64) PRIMARY KEY,
@@ -1066,9 +1068,34 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   if (/SELECT .* FROM virtual_files WHERE storage_account_id = .* AND user_id =/i.test(normalizedSql)) {
     const accountId = params[0];
     const userId = params[1];
-    const files = Array.from(memoryDb.virtualFiles.values()).filter(
+    let files = Array.from(memoryDb.virtualFiles.values()).filter(
       (f: any) => f.storage_account_id === accountId && f.user_id === userId
     );
+    if (/is_trashed = false/i.test(normalizedSql)) {
+      files = files.filter(f => !f.is_trashed);
+    } else if (/is_trashed = true/i.test(normalizedSql)) {
+      files = files.filter(f => f.is_trashed);
+    }
+    return { rows: files as any[], rowCount: files.length };
+  }
+
+  if (/SELECT .* FROM virtual_files WHERE storage_account_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    let files = Array.from(memoryDb.virtualFiles.values()).filter(
+      (f: any) => f.storage_account_id === accountId
+    );
+    if (/is_trashed = false/i.test(normalizedSql)) {
+      files = files.filter(f => !f.is_trashed);
+    } else if (/is_trashed = true/i.test(normalizedSql)) {
+      files = files.filter(f => f.is_trashed);
+    }
+    if (/parent_id =/i.test(normalizedSql)) {
+      const pMatch = normalizedSql.match(/parent_id = \$(\d+)/i);
+      if (pMatch) {
+        const pIndex = parseInt(pMatch[1], 10) - 1;
+        files = files.filter(f => f.parent_id === params[pIndex]);
+      }
+    }
     return { rows: files as any[], rowCount: files.length };
   }
 

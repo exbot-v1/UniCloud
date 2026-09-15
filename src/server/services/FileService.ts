@@ -25,7 +25,14 @@ import { ProviderRegistry } from '../providers/ProviderRegistry.js';
 export function normalizeFolderId(rawId?: string | null): string | null {
   if (!rawId) return null;
   const trimmed = String(rawId).trim();
-  if (trimmed === '' || trimmed === 'null' || trimmed === 'undefined' || trimmed === 'all') {
+  if (
+    trimmed === '' ||
+    trimmed === 'null' ||
+    trimmed === 'undefined' ||
+    trimmed === 'all' ||
+    trimmed.toLowerCase() === 'root' ||
+    trimmed.toLowerCase() === 'root/'
+  ) {
     return null;
   }
   const uuidMatch = trimmed.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);

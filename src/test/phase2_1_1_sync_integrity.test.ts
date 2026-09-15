@@ -24,7 +24,7 @@ import { SyncService } from '../server/services/SyncService.js';
 import { accountService } from '../server/services/AccountService.js';
 import { ProviderRegistry } from '../server/providers/ProviderRegistry.js';
 import { fileService } from '../server/services/FileService.js';
-import { ProviderFileListResult } from '../types/provider.js';
+import { ProviderFileListResult, ProviderFileMetadata } from '../types/provider.js';
 
 // Test mock provider that extends GoogleDriveProvider and mocks getDriveClient
 class MockGoogleDrivePaginationProvider extends GoogleDriveProvider {
@@ -1071,6 +1071,202 @@ describe('Phase 2.1.2 — Google Drive Ownership & Hierarchy Sync Integrity', ()
       const ownedFileCheck = await query(`SELECT * FROM virtual_files WHERE id = $1`, [ownedFileId]);
       assert.equal(ownedFileCheck.rows[0].is_trashed, false, 'Owned file must remain active');
       assert.equal(ownedFileCheck.rows[0].parent_id, null, 'Owned file parent_id must be reset to root (null)');
+    } finally {
+      (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, originalProvider);
+      accountService.getDecryptedCredentials = origGetCreds;
+    }
+  });
+});
+
+describe('Phase 2.1.3 — Authoritative Direct Folder Listing & 32-File Pagination Integrity', () => {
+  test('19. Child folder with 32 files paginated across multiple pages has all 32 files discovered, persisted, correctly parented, with no duplicates', async () => {
+    const test32UserId = 'user_folder_32_test_01';
+    const test32AccountId = 'acc_folder_32_test_01';
+
+    // Seed storage account
+    await query(
+      `INSERT INTO storage_accounts (
+        id, user_id, provider, provider_account_id, email, display_name,
+        encrypted_access_token, encrypted_refresh_token, token_iv, token_auth_tag,
+        token_expires_at, total_bytes, used_bytes, status, last_synced_at, created_at, updated_at
+      ) VALUES ($1, $2, 'google_drive', 'prov_32_acc_01', 'swagger_32@example.com', 'Swagger User',
+        'enc_access', 'enc_refresh', 'iv32', 'tag32',
+        NOW(), 15000000000, 5000000000, 'active', NOW(), NOW(), NOW())`,
+      [test32AccountId, test32UserId]
+    );
+
+    // Create 32 files distributed across 4 pages: 10 + 10 + 10 + 2
+    const totalChildFiles = 32;
+    const pageSize = 10;
+    const generatedChildFiles: ProviderFileMetadata[] = [];
+    for (let i = 1; i <= totalChildFiles; i++) {
+      generatedChildFiles.push({
+        providerFileId: `g_swagger_child_file_${String(i).padStart(2, '0')}`,
+        name: `swagger_document_${String(i).padStart(2, '0')}.pdf`,
+        mimeType: 'application/pdf',
+        sizeBytes: 1024 * i,
+        parentFolderId: 'g_swagger_child_folder_01',
+        parentFolderIds: ['g_swagger_child_folder_01'],
+        isFolder: false,
+        isStarred: false,
+        isTrashed: false,
+        ownedByMe: true,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+      });
+    }
+
+    // Mock Provider that serves the folder at root, and serves the 32 files when querying folder children
+    const mock32Provider = new (class extends GoogleDriveProvider {
+      public getOAuth2Client(): any {
+        return { setCredentials: () => {} };
+      }
+      public async getStartPageToken(): Promise<string> {
+        return 'token_32_test';
+      }
+      public async getStorageQuota(): Promise<any> {
+        return {
+          totalBytes: 15000000000,
+          usedBytes: 5000000000,
+          freeBytes: 10000000000,
+          usagePercentage: 33.33,
+        };
+      }
+      public async refreshAuthentication(): Promise<any> {
+        return { accessToken: 'refreshed_tok_32' };
+      }
+
+      public async listFiles(_accessToken: string, options?: any): Promise<ProviderFileListResult> {
+        // If folderId is specified, delegate to folder listing
+        if (options?.folderId && options.folderId === 'g_swagger_child_folder_01') {
+          return this.listFilesInFolder(_accessToken, options.folderId, options);
+        }
+
+        // Broad/root listing: returns the swagger child folder
+        return {
+          files: [
+            {
+              providerFileId: 'g_swagger_child_folder_01',
+              name: 'Swagger Child Folder',
+              mimeType: 'application/vnd.google-apps.folder',
+              sizeBytes: 0,
+              parentFolderId: null,
+              isFolder: true,
+              isStarred: false,
+              isTrashed: false,
+              ownedByMe: true,
+              createdAt: new Date().toISOString(),
+              modifiedAt: new Date().toISOString(),
+            },
+          ],
+          paginationComplete: true,
+        };
+      }
+
+      public async listFilesInFolder(_accessToken: string, folderId: string, options?: any): Promise<ProviderFileListResult> {
+        if (folderId !== 'g_swagger_child_folder_01') {
+          return { files: [], paginationComplete: true };
+        }
+
+        const pageToken = options?.pageToken;
+        let startIndex = 0;
+        if (pageToken === 'page_2') startIndex = 10;
+        else if (pageToken === 'page_3') startIndex = 20;
+        else if (pageToken === 'page_4') startIndex = 30;
+
+        const slice = generatedChildFiles.slice(startIndex, startIndex + pageSize);
+        const nextIndex = startIndex + pageSize;
+        const hasMore = nextIndex < totalChildFiles;
+        const nextPageToken = hasMore ? `page_${(nextIndex / 10) + 1}` : undefined;
+
+        if (options?.fetchAllPages) {
+          // If fetchAllPages is true, simulate client consuming all pages
+          return {
+            files: [...generatedChildFiles],
+            paginationComplete: true,
+          };
+        }
+
+        return {
+          files: slice,
+          nextPageToken,
+          paginationComplete: !hasMore,
+        };
+      }
+    })();
+
+    const originalProvider = ProviderRegistry.get(ProviderType.GOOGLE_DRIVE);
+    (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, mock32Provider);
+
+    const origGetCreds = accountService.getDecryptedCredentials.bind(accountService);
+    accountService.getDecryptedCredentials = async () => ({
+      accessToken: 'test_acc_tok_32',
+      refreshToken: 'test_ref_tok_32',
+      tokenExpiresAt: new Date(Date.now() + 3600000).toISOString(),
+      email: 'swagger_32@example.com',
+      provider: ProviderType.GOOGLE_DRIVE,
+    });
+
+    try {
+      const syncService = new SyncService();
+      const syncResult = await syncService.syncAccount(test32UserId, test32AccountId);
+
+      // 1. Verify paginationComplete is true
+      assert.equal(syncResult.paginationComplete, true, 'Sync paginationComplete must be true');
+
+      // 2. Verify virtual folder exists and get its authoritative UUID
+      const folderRows = await query(
+        `SELECT id, provider_folder_id, name, parent_id FROM virtual_folders 
+         WHERE storage_account_id = $1 AND provider_folder_id = $2`,
+        [test32AccountId, 'g_swagger_child_folder_01']
+      );
+      assert.equal(folderRows.rows.length, 1, 'Virtual folder must be created');
+      const folderUuid = folderRows.rows[0].id;
+      assert.equal(folderRows.rows[0].name, 'Swagger Child Folder');
+
+      // 3. Verify all 32 files are persisted in database
+      const fileRows = await query(
+        `SELECT id, provider_file_id, parent_id, name, is_trashed FROM virtual_files 
+         WHERE storage_account_id = $1 AND is_trashed = FALSE`,
+        [test32AccountId]
+      );
+      assert.equal(fileRows.rows.length, 32, 'All 32 child files must be persisted in virtual_files');
+
+      // 4. Verify all 32 files have the correct authoritative virtual parent UUID
+      for (const file of fileRows.rows) {
+        assert.equal(
+          file.parent_id,
+          folderUuid,
+          `File ${file.name} (${file.provider_file_id}) must have parent_id set to virtual folder UUID ${folderUuid}`
+        );
+      }
+
+      // 5. Verify no duplicates (all 32 provider_file_ids are unique)
+      const uniqueProviderIds = new Set(fileRows.rows.map((r: any) => r.provider_file_id));
+      assert.equal(uniqueProviderIds.size, 32, 'All 32 files must have distinct provider_file_ids');
+
+      // 6. Verify FileService query by folder UUID returns all 32 files
+      const filesByUuid = await fileService.getFilesInFolder(test32UserId, folderUuid);
+      assert.equal(filesByUuid.length, 32, 'FileService.getFilesInFolder by UUID must return all 32 files');
+
+      // 7. Verify FileService query by provider folder ID returns all 32 files
+      const filesByProviderId = await fileService.getFilesInFolder(test32UserId, 'g_swagger_child_folder_01');
+      assert.equal(filesByProviderId.length, 32, 'FileService.getFilesInFolder by provider ID must return all 32 files');
+
+      // 8. Repeated sync idempotency test: sync again and verify no duplicates
+      const repeatSyncResult = await syncService.syncAccount(test32UserId, test32AccountId);
+      assert.equal(repeatSyncResult.paginationComplete, true);
+
+      const repeatFileRows = await query(
+        `SELECT id, provider_file_id, parent_id FROM virtual_files 
+         WHERE storage_account_id = $1 AND is_trashed = FALSE`,
+        [test32AccountId]
+      );
+      assert.equal(repeatFileRows.rows.length, 32, 'Repeated sync must not duplicate files');
+
+      for (const file of repeatFileRows.rows) {
+        assert.equal(file.parent_id, folderUuid, 'Repeated sync must maintain correct parent_id');
+      }
     } finally {
       (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, originalProvider);
       accountService.getDecryptedCredentials = origGetCreds;

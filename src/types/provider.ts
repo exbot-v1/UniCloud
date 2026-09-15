@@ -117,6 +117,24 @@ export interface StorageProvider {
   listFiles(accessToken: string, options?: ProviderFileListOptions): Promise<ProviderFileListResult>;
 
   /**
+   * Authoritatively queries direct child files and folders of a specific provider folder
+   */
+  listFilesInFolder?(
+    accessToken: string,
+    folderId: string,
+    options?: Omit<ProviderFileListOptions, 'folderId'>
+  ): Promise<ProviderFileListResult>;
+
+  /**
+   * Alias for authoritative direct child listing
+   */
+  listFolderChildren?(
+    accessToken: string,
+    folderId: string,
+    options?: Omit<ProviderFileListOptions, 'folderId'>
+  ): Promise<ProviderFileListResult>;
+
+  /**
    * Retrieves the current start page token for incremental changes tracking (Phase 3)
    */
   getStartPageToken(accessToken: string): Promise<string>;

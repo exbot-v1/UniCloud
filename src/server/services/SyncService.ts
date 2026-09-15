@@ -18,6 +18,7 @@ import { accountService } from './AccountService.js';
 import { ProviderRegistry } from '../providers/ProviderRegistry.js';
 import { GoogleDriveProvider, isInvalidPageTokenError } from '../providers/GoogleDriveProvider.js';
 import { ProviderType, AccountStatus } from '../../types/account.js';
+import { ProviderFileListResult } from '../../types/provider.js';
 
 export interface SyncResult {
   accountId: string;
@@ -136,10 +137,10 @@ export class SyncService {
         pageSize: 100,
       });
 
-      const folderItems = listResult.files.filter((item) => item.isFolder);
-      const fileItems = listResult.files.filter((item) => !item.isFolder);
+      const initialFolderItems = listResult.files.filter((item) => item.isFolder);
+      const initialFileItems = listResult.files.filter((item) => !item.isFolder);
 
-      // 4. Load existing folder mappings for this account
+      // Load existing folder mappings for this account
       const existingFolderRows = await query(
         `SELECT id, provider_folder_id, parent_id FROM virtual_folders 
          WHERE storage_account_id = $1 AND provider_folder_id IS NOT NULL`,
@@ -151,8 +152,8 @@ export class SyncService {
         folderMap.set(row.provider_folder_id, row.id);
       }
 
-      // PASS 1: Upsert all folders and establish authoritative virtual folder IDs
-      for (const folder of folderItems) {
+      // PASS 1: Upsert all initially discovered folders and establish authoritative virtual folder IDs
+      for (const folder of initialFolderItems) {
         const existingId = folderMap.get(folder.providerFileId);
         const folderId = existingId || crypto.randomUUID();
 
@@ -186,7 +187,7 @@ export class SyncService {
       }
 
       // PASS 1.5: Resolve folder-to-folder parent relationships
-      for (const folder of folderItems) {
+      for (const folder of initialFolderItems) {
         const virtualFolderId = folderMap.get(folder.providerFileId)!;
         const candidateParents = [
           ...(folder.parentFolderIds || []),
@@ -215,9 +216,175 @@ export class SyncService {
         );
       }
 
-      // PASS 2: Upsert files with parent_id mapped to corresponding virtual_folder.id
+      // PASS 2: Authoritative Direct-Folder Reconciliation
+      // Query direct children for root and every known folder from Google Drive
+      let allQueriesPaginationComplete = listResult.paginationComplete;
+      const seenFileProviderIds = new Set<string>();
+      const allDiscoveredItemIds = new Set<string>(listResult.files.map(f => f.providerFileId));
       let filesAddedOrUpdatedCount = 0;
-      for (const file of fileItems) {
+
+      const foldersToQuery: Array<{ providerFolderId: string; virtualFolderId: string | null }> = [];
+
+      for (const [pFolderId, vFolderUuid] of folderMap.entries()) {
+        foldersToQuery.push({ providerFolderId: pFolderId, virtualFolderId: vFolderUuid });
+      }
+
+      const visitedFolders = new Set<string>();
+
+      const fetchFolderContents = async (
+        targetFolderId: string
+      ): Promise<ProviderFileListResult> => {
+        if (typeof provider.listFilesInFolder === 'function') {
+          return await provider.listFilesInFolder(accessToken, targetFolderId, {
+            fetchAllPages: true,
+            pageSize: 100,
+            includeShared: false,
+            includeTrashed: false,
+          });
+        }
+        if (typeof provider.listFolderChildren === 'function') {
+          return await provider.listFolderChildren(accessToken, targetFolderId, {
+            fetchAllPages: true,
+            pageSize: 100,
+            includeShared: false,
+            includeTrashed: false,
+          });
+        }
+        return await provider.listFiles(accessToken, {
+          folderId: targetFolderId,
+          fetchAllPages: true,
+          pageSize: 100,
+          includeShared: false,
+          includeTrashed: false,
+        });
+      };
+
+      while (foldersToQuery.length > 0) {
+        const target = foldersToQuery.shift()!;
+        if (visitedFolders.has(target.providerFolderId)) {
+          continue;
+        }
+        visitedFolders.add(target.providerFolderId);
+
+        let directChildren: ProviderFileListResult;
+        try {
+          directChildren = await fetchFolderContents(target.providerFolderId);
+        } catch (folderListErr: any) {
+          logger.warn(
+            `Failed to query direct folder contents for ${target.providerFolderId}: ${folderListErr.message}`
+          );
+          allQueriesPaginationComplete = false;
+          continue;
+        }
+
+        if (!directChildren.paginationComplete) {
+          allQueriesPaginationComplete = false;
+        }
+
+        for (const child of directChildren.files) {
+          allDiscoveredItemIds.add(child.providerFileId);
+
+          // Verify child is directly under target folder
+          const isDirectChild = (target.providerFolderId === 'root')
+            ? (!child.parentFolderId || child.parentFolderId === 'root' || child.parentFolderIds?.includes('root'))
+            : (child.parentFolderId === target.providerFolderId || (child.parentFolderIds && child.parentFolderIds.includes(target.providerFolderId)));
+
+          if (!isDirectChild) {
+            continue;
+          }
+
+          if (child.isFolder) {
+            const existingFolderId = folderMap.get(child.providerFileId);
+            const folderId = existingFolderId || crypto.randomUUID();
+
+            const upsertResult = await query<{ id: string }>(
+              `INSERT INTO virtual_folders (
+                id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
+                name, is_starred, is_trashed, created_at, updated_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+              ON CONFLICT (storage_account_id, provider_folder_id) DO UPDATE SET
+                parent_id = EXCLUDED.parent_id,
+                name = EXCLUDED.name,
+                is_starred = EXCLUDED.is_starred,
+                is_trashed = EXCLUDED.is_trashed,
+                updated_at = NOW()
+              RETURNING id`,
+              [
+                folderId,
+                userId,
+                target.virtualFolderId, // Authoritative parent virtual UUID
+                accountId,
+                ProviderType.GOOGLE_DRIVE,
+                child.providerFileId,
+                child.name,
+                child.isStarred ?? false,
+                child.isTrashed ?? false,
+                child.createdAt,
+                child.modifiedAt,
+              ]
+            );
+
+            const authoritativeFolderId = upsertResult.rows[0]?.id || folderId;
+            folderMap.set(child.providerFileId, authoritativeFolderId);
+
+            if (!visitedFolders.has(child.providerFileId)) {
+              foldersToQuery.push({
+                providerFolderId: child.providerFileId,
+                virtualFolderId: authoritativeFolderId,
+              });
+            }
+          } else {
+            // Child File: authoritatively set parent_id to current virtual folder UUID
+            seenFileProviderIds.add(child.providerFileId);
+            const fileId = crypto.randomUUID();
+
+            await query(
+              `INSERT INTO virtual_files (
+                id, user_id, storage_account_id, parent_id, provider, provider_file_id,
+                name, mime_type, size_bytes, md5_checksum, web_url, is_starred, is_trashed,
+                provider_created_at, provider_modified_at, synced_at, created_at, updated_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW(), NOW())
+              ON CONFLICT (storage_account_id, provider_file_id) DO UPDATE SET
+                parent_id = EXCLUDED.parent_id,
+                name = EXCLUDED.name,
+                mime_type = EXCLUDED.mime_type,
+                size_bytes = EXCLUDED.size_bytes,
+                md5_checksum = EXCLUDED.md5_checksum,
+                web_url = EXCLUDED.web_url,
+                is_starred = EXCLUDED.is_starred,
+                is_trashed = EXCLUDED.is_trashed,
+                provider_modified_at = EXCLUDED.provider_modified_at,
+                synced_at = NOW(),
+                updated_at = NOW()`,
+              [
+                fileId,
+                userId,
+                accountId,
+                target.virtualFolderId, // Authoritative virtual folder UUID (or null for root)
+                ProviderType.GOOGLE_DRIVE,
+                child.providerFileId,
+                child.name,
+                child.mimeType,
+                child.sizeBytes,
+                child.md5Checksum || null,
+                child.webUrl || null,
+                child.isStarred ?? false,
+                child.isTrashed ?? false,
+                child.createdAt,
+                child.modifiedAt,
+              ]
+            );
+            filesAddedOrUpdatedCount++;
+          }
+        }
+      }
+
+      // PASS 3: Upsert any remaining file items from initial listing not covered in folder listings
+      for (const file of initialFileItems) {
+        if (seenFileProviderIds.has(file.providerFileId)) {
+          continue;
+        }
+
         const candidateParents = [
           ...(file.parentFolderIds || []),
           file.parentFolderId,
@@ -268,12 +435,13 @@ export class SyncService {
             file.modifiedAt,
           ]
         );
+        seenFileProviderIds.add(file.providerFileId);
         filesAddedOrUpdatedCount++;
       }
 
       // 5. Detect and mark stale / unowned / deleted upstream files as trashed ONLY when pagination was complete
       let filesRemoved = 0;
-      if (listResult.paginationComplete) {
+      if (allQueriesPaginationComplete) {
         const staleFilesResult = await query(
           `UPDATE virtual_files SET
             is_trashed = TRUE,
@@ -299,33 +467,6 @@ export class SyncService {
              AND updated_at < $3`,
           [accountId, userId, syncStartTime.toISOString()]
         );
-
-        // Reconcile orphaned children:
-        // Any non-trashed file or folder whose parent is now trashed or missing
-        // is placed at the root (parent_id = NULL) so users don't lose access to valid owned items
-        await query(
-          `UPDATE virtual_files
-           SET parent_id = NULL, updated_at = NOW()
-           WHERE user_id = $1
-             AND is_trashed = FALSE
-             AND parent_id IS NOT NULL
-             AND parent_id IN (
-               SELECT id FROM virtual_folders WHERE is_trashed = TRUE AND user_id = $1
-             )`,
-          [userId]
-        );
-
-        await query(
-          `UPDATE virtual_folders
-           SET parent_id = NULL, updated_at = NOW()
-           WHERE user_id = $1
-             AND is_trashed = FALSE
-             AND parent_id IS NOT NULL
-             AND parent_id IN (
-               SELECT id FROM virtual_folders WHERE is_trashed = TRUE AND user_id = $1
-             )`,
-          [userId]
-        );
       } else {
         logger.warn(
           `Account ${accountId} sync pagination was truncated or incomplete. Stale file reconciliation skipped to protect unvisited files.`
@@ -346,8 +487,8 @@ export class SyncService {
       }
 
       // 7. Record sync audit record
-      const syncStatus = listResult.paginationComplete ? 'completed' : 'partial';
-      const syncNote = listResult.paginationComplete
+      const syncStatus = allQueriesPaginationComplete ? 'completed' : 'partial';
+      const syncNote = allQueriesPaginationComplete
         ? null
         : 'Pagination truncated: maxPages reached before consuming all upstream pages. Stale-item reconciliation skipped.';
 
@@ -361,7 +502,7 @@ export class SyncService {
           userId,
           accountId,
           syncStatus,
-          listResult.files.length,
+          allDiscoveredItemIds.size,
           filesAddedOrUpdatedCount,
           0,
           filesRemoved,
@@ -374,17 +515,17 @@ export class SyncService {
       await accountService.updateAccountStatus(userId, accountId, AccountStatus.ACTIVE, null);
 
       logger.info(
-        `Successfully synced account ${accountId}: ${filesAddedOrUpdatedCount} files, ${folderItems.length} folders, ${filesRemoved} stale files marked trashed (paginationComplete: ${listResult.paginationComplete})`
+        `Successfully synced account ${accountId}: ${filesAddedOrUpdatedCount} files, ${folderMap.size} folders, ${filesRemoved} stale files marked trashed (paginationComplete: ${allQueriesPaginationComplete})`
       );
 
       return {
         accountId,
-        filesDiscovered: listResult.files.length,
+        filesDiscovered: allDiscoveredItemIds.size,
         filesAddedOrUpdated: filesAddedOrUpdatedCount,
         filesRemoved,
-        foldersProcessed: folderItems.length,
+        foldersProcessed: folderMap.size,
         quotaUpdated: true,
-        paginationComplete: listResult.paginationComplete,
+        paginationComplete: allQueriesPaginationComplete,
         timestamp: new Date().toISOString(),
         syncType: 'full',
         changeToken: startChangeToken,
@@ -627,6 +768,16 @@ export class SyncService {
             if (folderMap.has(p)) {
               resolvedParentId = folderMap.get(p)!;
               break;
+            } else {
+              const folRes = await query<{ id: string }>(
+                `SELECT id FROM virtual_folders WHERE storage_account_id = $1 AND provider_folder_id = $2 AND user_id = $3 LIMIT 1`,
+                [accountId, p, userId]
+              );
+              if (folRes.rows.length > 0) {
+                resolvedParentId = folRes.rows[0].id;
+                folderMap.set(p, resolvedParentId);
+                break;
+              }
             }
           }
 
@@ -723,6 +874,16 @@ export class SyncService {
             if (folderMap.has(p)) {
               resolvedParentId = folderMap.get(p)!;
               break;
+            } else {
+              const folRes = await query<{ id: string }>(
+                `SELECT id FROM virtual_folders WHERE storage_account_id = $1 AND provider_folder_id = $2 AND user_id = $3 LIMIT 1`,
+                [accountId, p, userId]
+              );
+              if (folRes.rows.length > 0) {
+                resolvedParentId = folRes.rows[0].id;
+                folderMap.set(p, resolvedParentId);
+                break;
+              }
             }
           }
 
