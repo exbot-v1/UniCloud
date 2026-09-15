@@ -44,8 +44,8 @@ async function seedStorageAccount(params: {
       id, user_id, provider, provider_account_id, email, display_name, avatar_url,
       encrypted_access_token, encrypted_refresh_token, token_iv, token_auth_tag,
       token_expires_at, total_bytes, used_bytes, free_bytes, status, is_enabled, error_message,
-      drive_change_token
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+      provider_metadata, drive_change_token
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
     [
       params.id,
       params.userId,
@@ -65,6 +65,7 @@ async function seedStorageAccount(params: {
       AccountStatus.ACTIVE,
       true,
       null,
+      JSON.stringify({ initialSyncCompleted: true }),
       params.driveChangeToken || null,
     ]
   );

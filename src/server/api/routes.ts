@@ -582,9 +582,10 @@ apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Resp
     } else if (mode === 'delta') {
       syncResult = await syncService.syncDelta(req.user!.id, req.params.id);
     } else {
-      // Default: if change token exists, run incremental delta sync; otherwise run full sync
+      // Default: if verified complete initial sync AND change token exists, run incremental delta sync; otherwise run full sync
+      const isInitComplete = await syncService.isInitialSyncComplete(req.user!.id, req.params.id);
       const token = await accountService.getChangeToken(req.user!.id, req.params.id);
-      if (token) {
+      if (token && isInitComplete) {
         syncResult = await syncService.syncDelta(req.user!.id, req.params.id);
       } else {
         syncResult = await syncService.syncAccount(req.user!.id, req.params.id);

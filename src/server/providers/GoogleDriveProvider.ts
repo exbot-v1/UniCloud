@@ -290,10 +290,9 @@ export class GoogleDriveProvider implements StorageProvider {
       // Build query string
       const qParts: string[] = [];
 
-      // Ownership: When listing general files without a specific folder, restrict by default to items owned by the user if includeShared is false.
-      // But when querying inside a specific folder (folderId is provided), or when includeShared is true,
-      // NEVER exclude files by ownership — all files inside the folder belong to that folder!
-      const shouldFilterByOwner = Boolean(!options?.includeShared && !options?.folderId);
+      // Ownership: When includeShared is false (or omitted/default), restrict to items owned by the connected account ('me' in owners).
+      // Apply ownership filter consistently to both full drive listing and folder-specific queries.
+      const shouldFilterByOwner = options?.includeShared !== true;
       if (shouldFilterByOwner) {
         qParts.push("'me' in owners");
       }
@@ -416,7 +415,7 @@ export class GoogleDriveProvider implements StorageProvider {
     return this.listFiles(accessToken, {
       ...options,
       folderId: effectiveFolderId,
-      includeShared: options?.includeShared ?? true,
+      includeShared: options?.includeShared ?? false,
       pageSize: Math.min(options?.pageSize || 100, 100),
       fetchAllPages: options?.fetchAllPages ?? true,
     });

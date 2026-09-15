@@ -52,6 +52,173 @@ export class SyncService {
   }
 
   /**
+   * Checks whether the account has completed a verified full initial sync.
+   * Requirement 1: A change token MUST NOT be treated as proof that the initial filesystem is complete.
+   */
+  async isInitialSyncComplete(
+    userId: string,
+    accountId: string,
+    account?: any
+  ): Promise<boolean> {
+    // 1. Check account metadata if available
+    let meta = account?.provider_metadata || account?.providerMetadata;
+    let driveChangeToken = account?.drive_change_token || account?.driveChangeToken;
+
+    if (!meta || driveChangeToken === undefined) {
+      const res = await query<{ provider_metadata: any; drive_change_token: string | null }>(
+        `SELECT drive_change_token, provider_metadata FROM storage_accounts WHERE id = $1 AND user_id = $2`,
+        [accountId, userId]
+      );
+      if (res.rowCount === 0) return false;
+      meta = res.rows[0].provider_metadata;
+      driveChangeToken = res.rows[0].drive_change_token || (meta as any)?.driveChangeToken;
+    }
+
+    if (typeof meta === 'string') {
+      try {
+        meta = JSON.parse(meta);
+      } catch {
+        meta = {};
+      }
+    }
+
+    // Explicit flag in provider_metadata
+    if ((meta as any)?.initialSyncCompleted === true) {
+      return true;
+    }
+    if ((meta as any)?.initialSyncCompleted === false) {
+      return false;
+    }
+
+    // If there is no change token at all, initial sync is definitely incomplete
+    if (!driveChangeToken) {
+      return false;
+    }
+
+    // Check sync_history for a verified, completed full sync
+    const historyRes = await query<{
+      status: string;
+      error_message: string | null;
+      files_discovered: number;
+    }>(
+      `SELECT status, error_message, files_discovered FROM sync_history 
+       WHERE storage_account_id = $1 AND user_id = $2
+       ORDER BY started_at DESC`,
+      [accountId, userId]
+    );
+
+    if (historyRes.rows.length === 0) {
+      return false;
+    }
+
+    // Account has a verified completed initial sync if there is at least one completed full sync
+    // that was not merely an initial token establishment or delta sync
+    const hasCompletedFullSync = historyRes.rows.some((row) => {
+      if (row.status !== 'completed') return false;
+      const msg = row.error_message || '';
+      if (msg.includes('Established initial change token')) return false;
+      if (msg.includes('Delta sync')) return false;
+      return true;
+    });
+
+    return hasCompletedFullSync;
+  }
+
+  /**
+   * Resolves the authoritative virtual folder UUID for a provider folder ID.
+   * Checks the in-memory folderMap, then PostgreSQL virtual_folders, then queries Google Drive
+   * to discover and upsert any missing parent folder.
+   * Never stores Google provider folder ID in parent_id and never prematurely falls back to root.
+   */
+  private async resolveAuthoritativeParentId(
+    providerParentId: string | null | undefined,
+    folderMap: Map<string, string>,
+    userId: string,
+    accountId: string,
+    provider: GoogleDriveProvider,
+    accessToken: string,
+    existingParentId?: string | null
+  ): Promise<string | null> {
+    if (!providerParentId || providerParentId === 'root') {
+      return null;
+    }
+
+    // 1. Check in-memory folderMap
+    if (folderMap.has(providerParentId)) {
+      return folderMap.get(providerParentId)!;
+    }
+
+    // 2. Check database
+    const dbRes = await query<{ id: string }>(
+      `SELECT id FROM virtual_folders 
+       WHERE storage_account_id = $1 AND provider_folder_id = $2 AND user_id = $3
+       LIMIT 1`,
+      [accountId, providerParentId, userId]
+    );
+    if (dbRes.rows.length > 0) {
+      const vId = dbRes.rows[0].id;
+      folderMap.set(providerParentId, vId);
+      return vId;
+    }
+
+    // 3. Resolve from upstream Google Drive if parent folder record is missing
+    try {
+      const parentMeta = await provider.getFileMetadata(accessToken, providerParentId);
+      if (parentMeta && parentMeta.isFolder && (parentMeta.ownedByMe !== false && !parentMeta.isShared)) {
+        const grandParentId = await this.resolveAuthoritativeParentId(
+          parentMeta.parentFolderId,
+          folderMap,
+          userId,
+          accountId,
+          provider,
+          accessToken
+        );
+
+        const newFolderId = crypto.randomUUID();
+        const upsertRes = await query<{ id: string }>(
+          `INSERT INTO virtual_folders (
+            id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
+            name, is_starred, is_trashed, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+          ON CONFLICT (storage_account_id, provider_folder_id) DO UPDATE SET
+            parent_id = COALESCE(EXCLUDED.parent_id, virtual_folders.parent_id),
+            name = EXCLUDED.name,
+            is_starred = EXCLUDED.is_starred,
+            is_trashed = EXCLUDED.is_trashed,
+            updated_at = NOW()
+          RETURNING id`,
+          [
+            newFolderId,
+            userId,
+            grandParentId,
+            accountId,
+            ProviderType.GOOGLE_DRIVE,
+            providerParentId,
+            parentMeta.name,
+            parentMeta.isStarred ?? false,
+            parentMeta.isTrashed ?? false,
+            parentMeta.createdAt,
+          ]
+        );
+        const resolvedId = upsertRes.rows[0]?.id || newFolderId;
+        folderMap.set(providerParentId, resolvedId);
+        return resolvedId;
+      }
+    } catch (parentErr: any) {
+      logger.warn(`Could not resolve upstream parent folder ${providerParentId}: ${parentErr.message}`);
+    }
+
+    // 4. Safety: Never re-parent missing children to root merely because a mapping is temporarily missing.
+    // If existingParentId was already set, preserve it.
+    if (existingParentId !== undefined && existingParentId !== null) {
+      return existingParentId;
+    }
+
+    // Default to root only if item has no previous parent
+    return null;
+  }
+
+  /**
    * Triggers initial metadata synchronization for a connected storage account asynchronously.
    * Does NOT block the OAuth callback HTTP response.
    * Coalesces with any active in-flight sync for the same account to prevent duplicate runs.
@@ -123,23 +290,19 @@ export class SyncService {
       const quota = await provider.getStorageQuota(accessToken);
       await accountService.updateQuota(userId, accountId, quota);
 
-      // 3. Establish baseline change token BEFORE listing files to prevent race condition
-      let baselineChangeToken: string | null = null;
-      try {
-        baselineChangeToken = await provider.getStartPageToken(accessToken);
-      } catch (tokenErr: any) {
-        logger.warn(`Could not establish baseline start page token: ${tokenErr.message}`);
-      }
-
-      // 4. Query Drive Metadata with complete pagination
+      // 3. Query Drive Metadata with complete pagination (owned items only)
       const listResult = await provider.listFiles(accessToken, {
         fetchAllPages: true,
         pageSize: 100,
-        includeShared: true,
+        includeShared: false,
       });
 
-      const initialFolderItems = listResult.files.filter((item) => item.isFolder);
-      const initialFileItems = listResult.files.filter((item) => !item.isFolder);
+      // Filter out unowned and shared items to strictly respect ownership
+      const ownedFiles = listResult.files.filter(
+        (item) => item.ownedByMe !== false && !item.isShared
+      );
+      const initialFolderItems = ownedFiles.filter((item) => item.isFolder);
+      const initialFileItems = ownedFiles.filter((item) => !item.isFolder);
 
       // Load existing folder mappings for this account
       const existingFolderRows = await query(
@@ -197,8 +360,15 @@ export class SyncService {
 
         let resolvedParentId: string | null = null;
         for (const p of candidateParents) {
-          if (folderMap.has(p)) {
-            resolvedParentId = folderMap.get(p)!;
+          resolvedParentId = await this.resolveAuthoritativeParentId(
+            p,
+            folderMap,
+            userId,
+            accountId,
+            provider,
+            accessToken
+          );
+          if (resolvedParentId) {
             break;
           }
         }
@@ -221,7 +391,7 @@ export class SyncService {
       // Query direct children for root and every known folder from Google Drive
       let allQueriesPaginationComplete = listResult.paginationComplete;
       const seenFileProviderIds = new Set<string>();
-      const allDiscoveredItemIds = new Set<string>(listResult.files.map(f => f.providerFileId));
+      const allDiscoveredItemIds = new Set<string>(ownedFiles.map(f => f.providerFileId));
       let filesAddedOrUpdatedCount = 0;
 
       const foldersToQuery: Array<{ providerFolderId: string; virtualFolderId: string | null }> = [];
@@ -239,7 +409,7 @@ export class SyncService {
           return await provider.listFilesInFolder(accessToken, targetFolderId, {
             fetchAllPages: true,
             pageSize: 100,
-            includeShared: true,
+            includeShared: false,
             includeTrashed: false,
           });
         }
@@ -247,7 +417,7 @@ export class SyncService {
           return await provider.listFolderChildren(accessToken, targetFolderId, {
             fetchAllPages: true,
             pageSize: 100,
-            includeShared: true,
+            includeShared: false,
             includeTrashed: false,
           });
         }
@@ -255,7 +425,7 @@ export class SyncService {
           folderId: targetFolderId,
           fetchAllPages: true,
           pageSize: 100,
-          includeShared: true,
+          includeShared: false,
           includeTrashed: false,
         });
       };
@@ -283,11 +453,14 @@ export class SyncService {
         }
 
         for (const child of directChildren.files) {
+          // Ownership rule: only sync owned files/folders, exclude unowned/shared items
+          if (child.ownedByMe === false || child.isShared) {
+            continue;
+          }
+
           allDiscoveredItemIds.add(child.providerFileId);
 
           // Verify child is directly under target folder.
-          // Note: When queried specifically for a non-root folder, if Google API omits parents on shared items,
-          // it was returned by that folder's query so it belongs directly to target folder.
           const isDirectChild = (target.providerFolderId === 'root')
             ? (!child.parentFolderId || child.parentFolderId === 'root' || child.parentFolderIds?.includes('root'))
             : (
@@ -395,6 +568,10 @@ export class SyncService {
           continue;
         }
 
+        if (file.ownedByMe === false || file.isShared) {
+          continue;
+        }
+
         const candidateParents = [
           ...(file.parentFolderIds || []),
           file.parentFolderId,
@@ -402,8 +579,15 @@ export class SyncService {
 
         let resolvedParentId: string | null = null;
         for (const p of candidateParents) {
-          if (folderMap.has(p)) {
-            resolvedParentId = folderMap.get(p)!;
+          resolvedParentId = await this.resolveAuthoritativeParentId(
+            p,
+            folderMap,
+            userId,
+            accountId,
+            provider,
+            accessToken
+          );
+          if (resolvedParentId) {
             break;
           }
         }
@@ -416,7 +600,7 @@ export class SyncService {
             provider_created_at, provider_modified_at, synced_at, created_at, updated_at
           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW(), NOW())
           ON CONFLICT (storage_account_id, provider_file_id) DO UPDATE SET
-            parent_id = EXCLUDED.parent_id,
+            parent_id = COALESCE(EXCLUDED.parent_id, virtual_files.parent_id),
             name = EXCLUDED.name,
             mime_type = EXCLUDED.mime_type,
             size_bytes = EXCLUDED.size_bytes,
@@ -451,6 +635,8 @@ export class SyncService {
 
       // 5. Detect and mark stale / unowned / deleted upstream files as trashed ONLY when pagination was complete
       let filesRemoved = 0;
+      let startChangeToken: string | null = null;
+
       if (allQueriesPaginationComplete) {
         const staleFilesResult = await query(
           `UPDATE virtual_files SET
@@ -477,23 +663,24 @@ export class SyncService {
              AND updated_at < $3`,
           [accountId, userId, syncStartTime.toISOString()]
         );
-      } else {
-        logger.warn(
-          `Account ${accountId} sync pagination was truncated or incomplete. Stale file reconciliation skipped to protect unvisited files.`
-        );
-      }
 
-      // 6. Establish and persist start change token for subsequent delta syncs (Phase 3)
-      let startChangeToken = baselineChangeToken;
-      if (!startChangeToken) {
+        // Mark initial sync complete in account metadata
+        await accountService.setInitialSyncCompleted(userId, accountId, true);
+
+        // Establish and persist baseline start change token ONLY after successful complete full sync (Phase 3)
         try {
           startChangeToken = await provider.getStartPageToken(accessToken);
         } catch (tokenErr: any) {
           logger.warn(`Could not establish start page token during full sync: ${tokenErr.message}`);
         }
-      }
-      if (startChangeToken) {
-        await accountService.updateChangeToken(userId, accountId, startChangeToken);
+        if (startChangeToken) {
+          await accountService.updateChangeToken(userId, accountId, startChangeToken);
+        }
+      } else {
+        logger.warn(
+          `Account ${accountId} sync pagination was truncated or incomplete. Stale file reconciliation skipped, change token will NOT be established, and initial sync is marked incomplete.`
+        );
+        await accountService.setInitialSyncCompleted(userId, accountId, false);
       }
 
       // 7. Record sync audit record
@@ -620,61 +807,22 @@ export class SyncService {
       // 1. Refresh Access Token
       const { accessToken } = await provider.refreshAuthentication(credentials.refreshToken);
 
-      // 2. Retrieve Stored Change Token
-      let storedToken = await accountService.getChangeToken(userId, accountId);
-
-      // 3. Establish initial token if account does not have one
-      if (!storedToken) {
-        const fileCountResult = await query(
-          `SELECT count(*) as cnt FROM virtual_files WHERE storage_account_id = $1 AND user_id = $2`,
-          [accountId, userId]
+      // 2. Verify account has completed a verified full initial sync
+      const isInitComplete = await this.isInitialSyncComplete(userId, accountId, account);
+      if (!isInitComplete) {
+        logger.info(
+          `Account ${accountId} lacks a verified completed initial sync. Redirecting to full sync rebuild.`
         );
-        const existingCount = Number(fileCountResult.rows[0]?.cnt || fileCountResult.rows[0]?.count || 0);
+        return await this.executeSyncAccount(userId, accountId);
+      }
 
-        if (existingCount > 0) {
-          logger.info(`Establishing initial change token for existing account ${accountId}`);
-          storedToken = await provider.getStartPageToken(accessToken);
-          await accountService.updateChangeToken(userId, accountId, storedToken);
-
-          // Refresh quota
-          const quota = await provider.getStorageQuota(accessToken);
-          await accountService.updateQuota(userId, accountId, quota);
-
-          await query(
-            `INSERT INTO sync_history (
-              id, user_id, storage_account_id, status, files_discovered,
-              files_added, files_updated, files_removed, error_message, started_at, completed_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
-            [
-              crypto.randomUUID(),
-              userId,
-              accountId,
-              'completed',
-              0,
-              0,
-              0,
-              0,
-              'Established initial change token for existing account',
-              syncStartTime.toISOString(),
-            ]
-          );
-
-          return {
-            accountId,
-            filesDiscovered: 0,
-            filesAddedOrUpdated: 0,
-            filesRemoved: 0,
-            foldersProcessed: 0,
-            quotaUpdated: true,
-            paginationComplete: true,
-            timestamp: new Date().toISOString(),
-            syncType: 'delta',
-            changeToken: storedToken,
-          };
-        } else {
-          logger.info(`No existing files found for account ${accountId}; executing initial full sync.`);
-          return await this.executeSyncAccount(userId, accountId);
-        }
+      // 3. Retrieve Stored Change Token
+      let storedToken = await accountService.getChangeToken(userId, accountId);
+      if (!storedToken) {
+        logger.info(
+          `Account ${accountId} has no stored change token. Redirecting to full sync.`
+        );
+        return await this.executeSyncAccount(userId, accountId);
       }
 
       // 4. Query changes from Google Drive (consuming all available change pages)
@@ -746,6 +894,11 @@ export class SyncService {
         const fileMeta = change.file!;
         const providerFolderId = change.fileId || fileMeta.providerFileId;
 
+        // Apply ownership rule: exclude unowned / shared folders
+        if (fileMeta.ownedByMe === false || fileMeta.isShared) {
+          continue;
+        }
+
         if (fileMeta.isTrashed) {
           await query(
             `UPDATE virtual_folders SET
@@ -765,20 +918,15 @@ export class SyncService {
 
           let resolvedParentId: string | null = null;
           for (const p of candidateParents) {
-            if (folderMap.has(p)) {
-              resolvedParentId = folderMap.get(p)!;
-              break;
-            } else {
-              const folRes = await query<{ id: string }>(
-                `SELECT id FROM virtual_folders WHERE storage_account_id = $1 AND provider_folder_id = $2 AND user_id = $3 LIMIT 1`,
-                [accountId, p, userId]
-              );
-              if (folRes.rows.length > 0) {
-                resolvedParentId = folRes.rows[0].id;
-                folderMap.set(p, resolvedParentId);
-                break;
-              }
-            }
+            resolvedParentId = await this.resolveAuthoritativeParentId(
+              p,
+              folderMap,
+              userId,
+              accountId,
+              provider,
+              accessToken
+            );
+            if (resolvedParentId) break;
           }
 
           const existingFolderId = folderMap.get(providerFolderId) || crypto.randomUUID();
@@ -857,6 +1005,12 @@ export class SyncService {
         } else {
           // Active file create or update
           const fileMeta = change.file;
+
+          // Apply ownership rule: exclude unowned / shared files
+          if (fileMeta.ownedByMe === false || fileMeta.isShared) {
+            continue;
+          }
+
           const candidateParents = [
             ...(fileMeta.parentFolderIds || []),
             fileMeta.parentFolderId,
@@ -864,20 +1018,15 @@ export class SyncService {
 
           let resolvedParentId: string | null = null;
           for (const p of candidateParents) {
-            if (folderMap.has(p)) {
-              resolvedParentId = folderMap.get(p)!;
-              break;
-            } else {
-              const folRes = await query<{ id: string }>(
-                `SELECT id FROM virtual_folders WHERE storage_account_id = $1 AND provider_folder_id = $2 AND user_id = $3 LIMIT 1`,
-                [accountId, p, userId]
-              );
-              if (folRes.rows.length > 0) {
-                resolvedParentId = folRes.rows[0].id;
-                folderMap.set(p, resolvedParentId);
-                break;
-              }
-            }
+            resolvedParentId = await this.resolveAuthoritativeParentId(
+              p,
+              folderMap,
+              userId,
+              accountId,
+              provider,
+              accessToken
+            );
+            if (resolvedParentId) break;
           }
 
           const fileId = crypto.randomUUID();
@@ -888,7 +1037,7 @@ export class SyncService {
               provider_created_at, provider_modified_at, synced_at, created_at, updated_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW(), NOW())
             ON CONFLICT (storage_account_id, provider_file_id) DO UPDATE SET
-              parent_id = EXCLUDED.parent_id,
+              parent_id = COALESCE(EXCLUDED.parent_id, virtual_files.parent_id),
               name = EXCLUDED.name,
               mime_type = EXCLUDED.mime_type,
               size_bytes = EXCLUDED.size_bytes,
@@ -1072,8 +1221,9 @@ export class SyncService {
 
   /**
    * Synchronizes the contents of a specific folder from the cloud provider on-demand.
-   * Resolves the target virtual folder, retrieves direct children via listFilesInFolder (including shared files),
+   * Resolves the target virtual folder, retrieves direct children via listFilesInFolder (owned only),
    * and upserts all discovered files and subfolders into virtual_files and virtual_folders.
+   * When pagination is complete, safely reconciles and marks stale direct children as trashed.
    */
   async syncFolder(
     userId: string,
@@ -1106,10 +1256,12 @@ export class SyncService {
     const provider = ProviderRegistry.get(credentials.provider);
     const { accessToken } = await provider.refreshAuthentication(credentials.refreshToken);
 
+    const folderSyncStartTime = new Date();
+
     const directChildren = await provider.listFilesInFolder(accessToken, providerFolderId, {
       fetchAllPages: true,
       pageSize: 100,
-      includeShared: true,
+      includeShared: false,
       includeTrashed: false,
     });
 
@@ -1117,6 +1269,11 @@ export class SyncService {
     let foldersCount = 0;
 
     for (const child of directChildren.files) {
+      // Apply ownership rule: exclude unowned / shared items
+      if (child.ownedByMe === false || child.isShared) {
+        continue;
+      }
+
       if (child.isFolder) {
         foldersCount++;
         await query(
@@ -1133,7 +1290,7 @@ export class SyncService {
           [
             crypto.randomUUID(),
             userId,
-            virtualFolderId,
+            virtualFolderId, // Always authoritative virtual UUID, never provider ID
             accountId,
             folderRow.provider,
             child.providerFileId,
@@ -1168,7 +1325,7 @@ export class SyncService {
             crypto.randomUUID(),
             userId,
             accountId,
-            virtualFolderId,
+            virtualFolderId, // Always authoritative virtual UUID, never provider ID
             folderRow.provider,
             child.providerFileId,
             child.name,
@@ -1183,6 +1340,35 @@ export class SyncService {
           ]
         );
       }
+    }
+
+    // Reconcile direct children against PostgreSQL safely (ONLY if pagination completed)
+    if (directChildren.paginationComplete) {
+      await query(
+        `UPDATE virtual_files SET
+          is_trashed = TRUE,
+          trashed_at = NOW(),
+          updated_at = NOW()
+         WHERE storage_account_id = $1
+           AND user_id = $2
+           AND parent_id = $3
+           AND is_trashed = FALSE
+           AND synced_at < $4`,
+        [accountId, userId, virtualFolderId, folderSyncStartTime.toISOString()]
+      );
+
+      await query(
+        `UPDATE virtual_folders SET
+          is_trashed = TRUE,
+          trashed_at = NOW(),
+          updated_at = NOW()
+         WHERE storage_account_id = $1
+           AND user_id = $2
+           AND parent_id = $3
+           AND is_trashed = FALSE
+           AND updated_at < $4`,
+        [accountId, userId, virtualFolderId, folderSyncStartTime.toISOString()]
+      );
     }
 
     logger.info(

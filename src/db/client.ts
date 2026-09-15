@@ -770,6 +770,20 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
           acc.provider_metadata = { driveChangeToken: params[0] };
         }
       }
+      if (/provider_metadata/i.test(normalizedSql)) {
+        for (const p of params) {
+          if (p && typeof p === 'string') {
+            try {
+              const parsed = JSON.parse(p);
+              if (typeof parsed === 'object' && parsed !== null) {
+                acc.provider_metadata = { ...(acc.provider_metadata || {}), ...parsed };
+              }
+            } catch {}
+          } else if (p && typeof p === 'object' && !Array.isArray(p)) {
+            acc.provider_metadata = { ...(acc.provider_metadata || {}), ...p };
+          }
+        }
+      }
       if (/total_bytes/i.test(normalizedSql)) {
         acc.total_bytes = params[0];
         acc.used_bytes = params[1];
@@ -797,25 +811,54 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   if (/INSERT INTO storage_accounts/i.test(normalizedSql)) {
-    const id = params[0];
-    const user_id = params[1];
-    const provider = params[2] || 'google_drive';
-    const provider_account_id = params[3];
-    const email = params[4];
-    const display_name = params[5] || null;
-    const avatar_url = params[6] || null;
-    const encrypted_access_token = params[7] || null;
-    const encrypted_refresh_token = params[8];
-    const token_iv = params[9];
-    const token_auth_tag = params[10];
-    const token_expires_at = params[11] || null;
-    const total_bytes = params[12] || 0;
-    const used_bytes = params[13] || 0;
-    const free_bytes = params[14] || 0;
-    const status = params[15] || 'active';
-    const is_enabled = params[16] ?? true;
-    const error_message = params[17] || null;
-    const drive_change_token = params[18] || null;
+    const colMatch = normalizedSql.match(/INSERT INTO storage_accounts\s*\(([^)]+)\)/i);
+    let cols: string[] = [];
+    if (colMatch) {
+      cols = colMatch[1].split(',').map((c) => c.trim().toLowerCase());
+    }
+
+    const getParamByCol = (colName: string, fallbackIdx: number) => {
+      if (cols.length > 0) {
+        const idx = cols.indexOf(colName);
+        return idx !== -1 ? params[idx] : undefined;
+      }
+      return params[fallbackIdx];
+    };
+
+    const id = getParamByCol('id', 0);
+    const user_id = getParamByCol('user_id', 1);
+    const provider = getParamByCol('provider', 2) || 'google_drive';
+    const provider_account_id = getParamByCol('provider_account_id', 3);
+    const email = getParamByCol('email', 4);
+    const display_name = getParamByCol('display_name', 5) || null;
+    const avatar_url = getParamByCol('avatar_url', 6) || null;
+    const encrypted_access_token = getParamByCol('encrypted_access_token', 7) || null;
+    const encrypted_refresh_token = getParamByCol('encrypted_refresh_token', 8);
+    const token_iv = getParamByCol('token_iv', 9);
+    const token_auth_tag = getParamByCol('token_auth_tag', 10);
+    const token_expires_at = getParamByCol('token_expires_at', 11) || null;
+    const total_bytes = getParamByCol('total_bytes', 12) || 0;
+    const used_bytes = getParamByCol('used_bytes', 13) || 0;
+    const free_bytes = getParamByCol('free_bytes', 14) || 0;
+    const status = getParamByCol('status', 15) || 'active';
+    const is_enabled = getParamByCol('is_enabled', 16) ?? true;
+    const error_message = getParamByCol('error_message', 17) || null;
+    let drive_change_token = getParamByCol('drive_change_token', 18) || null;
+
+    let metaVal: any = {};
+    const rawMeta = getParamByCol('provider_metadata', -1);
+    if (rawMeta) {
+      if (typeof rawMeta === 'string') {
+        try {
+          metaVal = JSON.parse(rawMeta);
+        } catch {
+          metaVal = {};
+        }
+      } else if (typeof rawMeta === 'object') {
+        metaVal = rawMeta;
+      }
+    }
+
     const now = new Date().toISOString();
 
     // Check if account already exists for user + provider + provider_account_id
@@ -835,6 +878,9 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
         acc.status = status;
         acc.error_message = error_message;
         if (drive_change_token !== null) acc.drive_change_token = drive_change_token;
+        if (Object.keys(metaVal).length > 0) {
+          acc.provider_metadata = { ...(acc.provider_metadata || {}), ...metaVal };
+        }
         acc.updated_at = now;
         return { rows: [acc as any], rowCount: 1 };
       }
@@ -862,7 +908,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       drive_change_token: drive_change_token || null,
       last_synced_at: null,
       last_health_check_at: now,
-      provider_metadata: {},
+      provider_metadata: metaVal,
       created_at: now,
       updated_at: now,
     };

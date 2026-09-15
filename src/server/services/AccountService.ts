@@ -337,6 +337,39 @@ export class AccountService {
   }
 
   /**
+   * Sets the initial sync completion state in provider_metadata.
+   */
+  async setInitialSyncCompleted(userId: string, accountId: string, completed: boolean = true): Promise<void> {
+    const now = new Date().toISOString();
+    const metaPatch = JSON.stringify({
+      initialSyncCompleted: completed,
+      initialSyncCompletedAt: completed ? now : null,
+    });
+    await query(
+      `UPDATE storage_accounts SET
+        provider_metadata = COALESCE(provider_metadata, '{}'::jsonb) || $1::jsonb,
+        updated_at = $2
+       WHERE id = $3 AND user_id = $4`,
+      [metaPatch, now, accountId, userId]
+    );
+  }
+
+  /**
+   * Checks whether the account has an explicit initialSyncCompleted marker.
+   */
+  async isInitialSyncCompleted(userId: string, accountId: string): Promise<boolean> {
+    const result = await query<DbStorageAccount>(
+      `SELECT provider_metadata FROM storage_accounts WHERE id = $1 AND user_id = $2`,
+      [accountId, userId]
+    );
+    if (result.rowCount === 0) {
+      return false;
+    }
+    const meta = result.rows[0].provider_metadata as any;
+    return Boolean(meta?.initialSyncCompleted);
+  }
+
+  /**
    * Updates an account's status (active, token_expired, error).
    */
   async updateAccountStatus(
