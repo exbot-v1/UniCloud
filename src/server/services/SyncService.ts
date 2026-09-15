@@ -135,6 +135,7 @@ export class SyncService {
       const listResult = await provider.listFiles(accessToken, {
         fetchAllPages: true,
         pageSize: 100,
+        includeShared: true,
       });
 
       const initialFolderItems = listResult.files.filter((item) => item.isFolder);
@@ -238,7 +239,7 @@ export class SyncService {
           return await provider.listFilesInFolder(accessToken, targetFolderId, {
             fetchAllPages: true,
             pageSize: 100,
-            includeShared: false,
+            includeShared: true,
             includeTrashed: false,
           });
         }
@@ -246,7 +247,7 @@ export class SyncService {
           return await provider.listFolderChildren(accessToken, targetFolderId, {
             fetchAllPages: true,
             pageSize: 100,
-            includeShared: false,
+            includeShared: true,
             includeTrashed: false,
           });
         }
@@ -254,7 +255,7 @@ export class SyncService {
           folderId: targetFolderId,
           fetchAllPages: true,
           pageSize: 100,
-          includeShared: false,
+          includeShared: true,
           includeTrashed: false,
         });
       };
@@ -284,13 +285,22 @@ export class SyncService {
         for (const child of directChildren.files) {
           allDiscoveredItemIds.add(child.providerFileId);
 
-          // Verify child is directly under target folder
+          // Verify child is directly under target folder.
+          // Note: When queried specifically for a non-root folder, if Google API omits parents on shared items,
+          // it was returned by that folder's query so it belongs directly to target folder.
           const isDirectChild = (target.providerFolderId === 'root')
             ? (!child.parentFolderId || child.parentFolderId === 'root' || child.parentFolderIds?.includes('root'))
-            : (child.parentFolderId === target.providerFolderId || (child.parentFolderIds && child.parentFolderIds.includes(target.providerFolderId)));
+            : (
+                child.parentFolderId === target.providerFolderId ||
+                (child.parentFolderIds && child.parentFolderIds.includes(target.providerFolderId))
+              );
 
           if (!isDirectChild) {
             continue;
+          }
+
+          if (!child.parentFolderId && target.providerFolderId !== 'root') {
+            child.parentFolderId = target.providerFolderId;
           }
 
           if (child.isFolder) {
@@ -736,16 +746,6 @@ export class SyncService {
         const fileMeta = change.file!;
         const providerFolderId = change.fileId || fileMeta.providerFileId;
 
-        // Skip folders not owned by connected account; clean up if previously stored
-        if (fileMeta.ownedByMe === false || fileMeta.isShared) {
-          await query(
-            `DELETE FROM virtual_folders WHERE storage_account_id = $1 AND provider_folder_id = $2 AND user_id = $3`,
-            [accountId, providerFolderId, userId]
-          );
-          folderMap.delete(providerFolderId);
-          continue;
-        }
-
         if (fileMeta.isTrashed) {
           await query(
             `UPDATE virtual_folders SET
@@ -843,13 +843,6 @@ export class SyncService {
           if ((delFileRes.rowCount || 0) > 0 || (delFolderRes.rowCount || 0) > 0) {
             filesRemovedCount++;
           }
-        } else if (change.file.ownedByMe === false || change.file.isShared) {
-          // Unowned / shared item: clean up from virtual_files if previously present
-          await query(
-            `DELETE FROM virtual_files 
-             WHERE storage_account_id = $1 AND provider_file_id = $2 AND user_id = $3`,
-            [accountId, providerFileId, userId]
-          );
         } else if (change.file.isTrashed) {
           // Trashed upstream
           await query(
@@ -1075,6 +1068,127 @@ export class SyncService {
     const token = await provider.getStartPageToken(accessToken);
     await accountService.updateChangeToken(userId, accountId, token);
     return token;
+  }
+
+  /**
+   * Synchronizes the contents of a specific folder from the cloud provider on-demand.
+   * Resolves the target virtual folder, retrieves direct children via listFilesInFolder (including shared files),
+   * and upserts all discovered files and subfolders into virtual_files and virtual_folders.
+   */
+  async syncFolder(
+    userId: string,
+    folderId: string
+  ): Promise<{ filesCount: number; foldersCount: number }> {
+    const folRes = await query<{
+      id: string;
+      storage_account_id: string;
+      provider: ProviderType;
+      provider_folder_id: string;
+      name: string;
+    }>(
+      `SELECT id, storage_account_id, provider, provider_folder_id, name 
+       FROM virtual_folders 
+       WHERE (id = $1 OR provider_folder_id = $1) AND user_id = $2
+       LIMIT 1`,
+      [folderId, userId]
+    );
+
+    if (folRes.rows.length === 0) {
+      throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, 'Folder not found', 404);
+    }
+
+    const folderRow = folRes.rows[0];
+    const accountId = folderRow.storage_account_id;
+    const providerFolderId = folderRow.provider_folder_id;
+    const virtualFolderId = folderRow.id;
+
+    const credentials = await accountService.getDecryptedCredentials(userId, accountId);
+    const provider = ProviderRegistry.get(credentials.provider);
+    const { accessToken } = await provider.refreshAuthentication(credentials.refreshToken);
+
+    const directChildren = await provider.listFilesInFolder(accessToken, providerFolderId, {
+      fetchAllPages: true,
+      pageSize: 100,
+      includeShared: true,
+      includeTrashed: false,
+    });
+
+    let filesCount = 0;
+    let foldersCount = 0;
+
+    for (const child of directChildren.files) {
+      if (child.isFolder) {
+        foldersCount++;
+        await query(
+          `INSERT INTO virtual_folders (
+            id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
+            name, is_starred, is_trashed, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          ON CONFLICT (storage_account_id, provider_folder_id) DO UPDATE SET
+            parent_id = EXCLUDED.parent_id,
+            name = EXCLUDED.name,
+            is_starred = EXCLUDED.is_starred,
+            is_trashed = EXCLUDED.is_trashed,
+            updated_at = NOW()`,
+          [
+            crypto.randomUUID(),
+            userId,
+            virtualFolderId,
+            accountId,
+            folderRow.provider,
+            child.providerFileId,
+            child.name,
+            child.isStarred ?? false,
+            child.isTrashed ?? false,
+            child.createdAt,
+            child.modifiedAt,
+          ]
+        );
+      } else {
+        filesCount++;
+        await query(
+          `INSERT INTO virtual_files (
+            id, user_id, storage_account_id, parent_id, provider, provider_file_id,
+            name, mime_type, size_bytes, md5_checksum, web_url, is_starred, is_trashed,
+            provider_created_at, provider_modified_at, synced_at, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW(), NOW())
+          ON CONFLICT (storage_account_id, provider_file_id) DO UPDATE SET
+            parent_id = EXCLUDED.parent_id,
+            name = EXCLUDED.name,
+            mime_type = EXCLUDED.mime_type,
+            size_bytes = EXCLUDED.size_bytes,
+            md5_checksum = EXCLUDED.md5_checksum,
+            web_url = EXCLUDED.web_url,
+            is_starred = EXCLUDED.is_starred,
+            is_trashed = EXCLUDED.is_trashed,
+            provider_modified_at = EXCLUDED.provider_modified_at,
+            synced_at = NOW(),
+            updated_at = NOW()`,
+          [
+            crypto.randomUUID(),
+            userId,
+            accountId,
+            virtualFolderId,
+            folderRow.provider,
+            child.providerFileId,
+            child.name,
+            child.mimeType,
+            child.sizeBytes,
+            child.md5Checksum || null,
+            child.webUrl || null,
+            child.isStarred ?? false,
+            child.isTrashed ?? false,
+            child.createdAt,
+            child.modifiedAt,
+          ]
+        );
+      }
+    }
+
+    logger.info(
+      `Synchronized folder ${folderRow.name} (${virtualFolderId}): ${filesCount} files, ${foldersCount} subfolders`
+    );
+    return { filesCount, foldersCount };
   }
 }
 

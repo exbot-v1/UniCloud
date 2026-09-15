@@ -290,8 +290,11 @@ export class GoogleDriveProvider implements StorageProvider {
       // Build query string
       const qParts: string[] = [];
 
-      // Ownership: Restrict normal Google Drive metadata synchronization to items owned by the connected Google account
-      if (!options?.includeShared) {
+      // Ownership: When listing general files without a specific folder, restrict by default to items owned by the user if includeShared is false.
+      // But when querying inside a specific folder (folderId is provided), or when includeShared is true,
+      // NEVER exclude files by ownership — all files inside the folder belong to that folder!
+      const shouldFilterByOwner = Boolean(!options?.includeShared && !options?.folderId);
+      if (shouldFilterByOwner) {
         qParts.push("'me' in owners");
       }
 
@@ -325,6 +328,8 @@ export class GoogleDriveProvider implements StorageProvider {
           pageToken: currentPageToken,
           fields: 'nextPageToken, files(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred, ownedByMe, owners(emailAddress, displayName, me))',
           orderBy: 'modifiedTime desc',
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
         });
 
         const pageFiles: ProviderFileMetadata[] = [];
@@ -335,7 +340,7 @@ export class GoogleDriveProvider implements StorageProvider {
                 ? f.owners.some((o: any) => Boolean(o.me))
                 : true);
 
-          if (!options?.includeShared && !isOwned) {
+          if (shouldFilterByOwner && !isOwned) {
             continue;
           }
 
@@ -400,7 +405,7 @@ export class GoogleDriveProvider implements StorageProvider {
   /**
    * Authoritatively queries direct child files and folders of a specific Google Drive folder.
    * Uses paginated Google Drive files.list with `'<folderId>' in parents`.
-   * Strictly enforces ownership: only owned, non-trashed items are returned.
+   * Includes all files and folders inside the target folder regardless of individual file ownership.
    */
   async listFilesInFolder(
     accessToken: string,
@@ -411,6 +416,7 @@ export class GoogleDriveProvider implements StorageProvider {
     return this.listFiles(accessToken, {
       ...options,
       folderId: effectiveFolderId,
+      includeShared: options?.includeShared ?? true,
       pageSize: Math.min(options?.pageSize || 100, 100),
       fetchAllPages: options?.fetchAllPages ?? true,
     });
@@ -487,9 +493,9 @@ export class GoogleDriveProvider implements StorageProvider {
           pageSize,
           fields: 'nextPageToken, newStartPageToken, changes(fileId, removed, time, file(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred, ownedByMe, owners(emailAddress, displayName, me)))',
           includeRemoved: options.includeRemoved ?? true,
-          supportsAllDrives: false,
-          includeItemsFromAllDrives: false,
-          restrictToMyDrive: options.restrictToMyDrive ?? true,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+          restrictToMyDrive: options.restrictToMyDrive ?? false,
         });
 
         const pageChanges: ProviderChangeItem[] = (res.data.changes || []).map((c) => {

@@ -56,7 +56,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
   const [isRefreshingAll, setIsRefreshingAll] = useState(false);
 
   // Sync an individual account
-  const handleSync = async (account: StorageAccount, mode: 'delta' | 'full' = 'delta') => {
+  const handleSync = async (account: StorageAccount, mode: 'delta' | 'full' = 'full') => {
     if (syncingAccountId) return;
     setSyncingAccountId(account.id);
 

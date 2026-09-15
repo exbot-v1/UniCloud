@@ -41,6 +41,7 @@ import {
   ArrowUp,
   ArrowDown,
   CloudUpload,
+  RefreshCw,
 } from 'lucide-react';
 import { VirtualFile, VirtualFolder, ViewMode } from '../types/filesystem';
 import { StorageAccount } from '../types/account';
@@ -321,6 +322,34 @@ export const FilesView: React.FC<FilesViewProps> = ({
   useEffect(() => {
     fetchFilesystemData(currentFolderId);
   }, [fetchFilesystemData, currentFolderId]);
+
+  // Handle on-demand folder synchronization with Google Drive
+  const [isSyncingCurrentView, setIsSyncingCurrentView] = useState(false);
+  const handleSyncCurrentView = async () => {
+    if (isSyncingCurrentView) return;
+    setIsSyncingCurrentView(true);
+    try {
+      if (currentFolderId) {
+        const res = await authFetch(`/api/folders/${currentFolderId}/sync`, { method: 'POST' });
+        const json = await res.json();
+        if (res.ok && json.success) {
+          success(`Folder synced: ${json.data?.filesCount ?? 0} files found`);
+        } else {
+          error(json.error?.message || 'Failed to synchronize folder');
+        }
+      } else {
+        if (onRefreshStoragePool) {
+          await onRefreshStoragePool();
+        }
+      }
+      await fetchFilesystemData(currentFolderId);
+    } catch (err: any) {
+      console.error('Failed to sync folder view', err);
+      error(err.message || 'Error syncing view');
+    } finally {
+      setIsSyncingCurrentView(false);
+    }
+  };
 
   // Use props if explicitly passed, otherwise use loaded state
   const rawFiles = propFiles !== undefined ? propFiles : realFiles;
@@ -1015,18 +1044,30 @@ export const FilesView: React.FC<FilesViewProps> = ({
             </button>
           </div>
 
-          {/* Actions: New Folder (Only in files view) */}
+          {/* Actions: Sync & New Folder (Only in files view) */}
           {activeView === 'files' && (
-            <button
-              onClick={() => {
-                setIsCreatingFolder(true);
-                setNewFolderName('');
-              }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg transition-colors shadow-2xs cursor-pointer"
-            >
-              <Plus className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
-              <span>New Folder</span>
-            </button>
+            <>
+              <button
+                onClick={handleSyncCurrentView}
+                disabled={isSyncingCurrentView}
+                title={currentFolderId ? "Sync this folder directly with Google Drive" : "Refresh and sync files"}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg transition-colors shadow-2xs cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5 text-slate-500 dark:text-slate-400", isSyncingCurrentView && "animate-spin")} />
+                <span>{isSyncingCurrentView ? 'Syncing...' : 'Sync'}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setIsCreatingFolder(true);
+                  setNewFolderName('');
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-200 dark:border-slate-700 rounded-lg transition-colors shadow-2xs cursor-pointer"
+              >
+                <Plus className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
+                <span>New Folder</span>
+              </button>
+            </>
           )}
 
           {/* Upload Button */}

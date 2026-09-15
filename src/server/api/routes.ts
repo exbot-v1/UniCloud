@@ -1188,6 +1188,28 @@ apiRouter.get('/folders/:id', requireAuth, async (req: Request, res: Response) =
 });
 
 /**
+ * POST /api/folders/:id/sync
+ * Directly queries the cloud provider to synchronize all contents of a specific folder on-demand.
+ */
+apiRouter.post('/folders/:id/sync', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const cleanId = normalizeFolderId(req.params.id) || req.params.id;
+    const syncStats = await syncService.syncFolder(req.user!.id, cleanId);
+    const response: ApiResponse<typeof syncStats> = {
+      success: true,
+      data: syncStats,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: '1.5.0-phase5',
+      },
+    };
+    res.json(response);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+/**
  * POST /api/folders/:id/move
  * Moves a virtual folder into another virtual folder or root.
  */
