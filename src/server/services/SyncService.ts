@@ -153,6 +153,9 @@ export class SyncService {
 
       // PASS 1: Upsert all folders and establish authoritative virtual folder IDs
       for (const folder of folderItems) {
+        const existingId = folderMap.get(folder.providerFileId);
+        const folderId = existingId || crypto.randomUUID();
+
         const upsertResult = await query<{ id: string }>(
           `INSERT INTO virtual_folders (
             id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
@@ -165,7 +168,7 @@ export class SyncService {
             updated_at = NOW()
           RETURNING id`,
           [
-            crypto.randomUUID(),
+            folderId,
             userId,
             accountId,
             ProviderType.GOOGLE_DRIVE,
@@ -178,19 +181,30 @@ export class SyncService {
           ]
         );
 
-        const authoritativeFolderId = upsertResult.rows[0]?.id;
-        if (authoritativeFolderId) {
-          folderMap.set(folder.providerFileId, authoritativeFolderId);
-        }
+        const authoritativeFolderId = upsertResult.rows[0]?.id || folderId;
+        folderMap.set(folder.providerFileId, authoritativeFolderId);
       }
 
       // PASS 1.5: Resolve folder-to-folder parent relationships
       for (const folder of folderItems) {
         const virtualFolderId = folderMap.get(folder.providerFileId)!;
-        const gDriveParentId = folder.parentFolderId;
-        const resolvedParentId = (gDriveParentId && folderMap.has(gDriveParentId))
-          ? folderMap.get(gDriveParentId)!
-          : null;
+        const candidateParents = [
+          ...(folder.parentFolderIds || []),
+          folder.parentFolderId,
+        ].filter((p): p is string => Boolean(p));
+
+        let resolvedParentId: string | null = null;
+        for (const p of candidateParents) {
+          if (folderMap.has(p)) {
+            resolvedParentId = folderMap.get(p)!;
+            break;
+          }
+        }
+
+        // Prevent self-referencing hierarchy
+        if (resolvedParentId === virtualFolderId) {
+          resolvedParentId = null;
+        }
 
         await query(
           `UPDATE virtual_folders SET
@@ -204,10 +218,18 @@ export class SyncService {
       // PASS 2: Upsert files with parent_id mapped to corresponding virtual_folder.id
       let filesAddedOrUpdatedCount = 0;
       for (const file of fileItems) {
-        const gDriveParentId = file.parentFolderId;
-        const resolvedParentId = (gDriveParentId && folderMap.has(gDriveParentId))
-          ? folderMap.get(gDriveParentId)!
-          : null;
+        const candidateParents = [
+          ...(file.parentFolderIds || []),
+          file.parentFolderId,
+        ].filter((p): p is string => Boolean(p));
+
+        let resolvedParentId: string | null = null;
+        for (const p of candidateParents) {
+          if (folderMap.has(p)) {
+            resolvedParentId = folderMap.get(p)!;
+            break;
+          }
+        }
 
         const fileId = crypto.randomUUID();
         await query(
@@ -249,7 +271,7 @@ export class SyncService {
         filesAddedOrUpdatedCount++;
       }
 
-      // 5. Detect and mark stale / deleted upstream files as trashed ONLY when pagination was complete
+      // 5. Detect and mark stale / unowned / deleted upstream files as trashed ONLY when pagination was complete
       let filesRemoved = 0;
       if (listResult.paginationComplete) {
         const staleFilesResult = await query(
@@ -264,6 +286,46 @@ export class SyncService {
           [accountId, userId, syncStartTime.toISOString()]
         );
         filesRemoved = staleFilesResult.rowCount || 0;
+
+        // Reconcile stale / unowned folders (e.g. shared folders previously imported)
+        await query(
+          `UPDATE virtual_folders SET
+            is_trashed = TRUE,
+            trashed_at = NOW(),
+            updated_at = NOW()
+           WHERE storage_account_id = $1
+             AND user_id = $2
+             AND is_trashed = FALSE
+             AND updated_at < $3`,
+          [accountId, userId, syncStartTime.toISOString()]
+        );
+
+        // Reconcile orphaned children:
+        // Any non-trashed file or folder whose parent is now trashed or missing
+        // is placed at the root (parent_id = NULL) so users don't lose access to valid owned items
+        await query(
+          `UPDATE virtual_files
+           SET parent_id = NULL, updated_at = NOW()
+           WHERE user_id = $1
+             AND is_trashed = FALSE
+             AND parent_id IS NOT NULL
+             AND parent_id IN (
+               SELECT id FROM virtual_folders WHERE is_trashed = TRUE AND user_id = $1
+             )`,
+          [userId]
+        );
+
+        await query(
+          `UPDATE virtual_folders
+           SET parent_id = NULL, updated_at = NOW()
+           WHERE user_id = $1
+             AND is_trashed = FALSE
+             AND parent_id IS NOT NULL
+             AND parent_id IN (
+               SELECT id FROM virtual_folders WHERE is_trashed = TRUE AND user_id = $1
+             )`,
+          [userId]
+        );
       } else {
         logger.warn(
           `Account ${accountId} sync pagination was truncated or incomplete. Stale file reconciliation skipped to protect unvisited files.`
@@ -533,6 +595,16 @@ export class SyncService {
         const fileMeta = change.file!;
         const providerFolderId = change.fileId || fileMeta.providerFileId;
 
+        // Skip folders not owned by connected account; clean up if previously stored
+        if (fileMeta.ownedByMe === false || fileMeta.isShared) {
+          await query(
+            `DELETE FROM virtual_folders WHERE storage_account_id = $1 AND provider_folder_id = $2 AND user_id = $3`,
+            [accountId, providerFolderId, userId]
+          );
+          folderMap.delete(providerFolderId);
+          continue;
+        }
+
         if (fileMeta.isTrashed) {
           await query(
             `UPDATE virtual_folders SET
@@ -545,9 +617,17 @@ export class SyncService {
           filesUpdatedCount++;
         } else {
           // Resolve parent
+          const candidateParents = [
+            ...(fileMeta.parentFolderIds || []),
+            fileMeta.parentFolderId,
+          ].filter((p): p is string => Boolean(p));
+
           let resolvedParentId: string | null = null;
-          if (fileMeta.parentFolderId && folderMap.has(fileMeta.parentFolderId)) {
-            resolvedParentId = folderMap.get(fileMeta.parentFolderId)!;
+          for (const p of candidateParents) {
+            if (folderMap.has(p)) {
+              resolvedParentId = folderMap.get(p)!;
+              break;
+            }
           }
 
           const existingFolderId = folderMap.get(providerFolderId) || crypto.randomUUID();
@@ -580,7 +660,7 @@ export class SyncService {
           const folderId = upsertRes.rows[0]?.id || existingFolderId;
           folderMap.set(providerFolderId, folderId);
 
-          if (resolvedParentId) {
+          if (resolvedParentId && resolvedParentId !== folderId) {
             await query(
               `UPDATE virtual_folders SET parent_id = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3`,
               [resolvedParentId, folderId, userId]
@@ -612,6 +692,13 @@ export class SyncService {
           if ((delFileRes.rowCount || 0) > 0 || (delFolderRes.rowCount || 0) > 0) {
             filesRemovedCount++;
           }
+        } else if (change.file.ownedByMe === false || change.file.isShared) {
+          // Unowned / shared item: clean up from virtual_files if previously present
+          await query(
+            `DELETE FROM virtual_files 
+             WHERE storage_account_id = $1 AND provider_file_id = $2 AND user_id = $3`,
+            [accountId, providerFileId, userId]
+          );
         } else if (change.file.isTrashed) {
           // Trashed upstream
           await query(
@@ -626,9 +713,17 @@ export class SyncService {
         } else {
           // Active file create or update
           const fileMeta = change.file;
+          const candidateParents = [
+            ...(fileMeta.parentFolderIds || []),
+            fileMeta.parentFolderId,
+          ].filter((p): p is string => Boolean(p));
+
           let resolvedParentId: string | null = null;
-          if (fileMeta.parentFolderId && folderMap.has(fileMeta.parentFolderId)) {
-            resolvedParentId = folderMap.get(fileMeta.parentFolderId)!;
+          for (const p of candidateParents) {
+            if (folderMap.has(p)) {
+              resolvedParentId = folderMap.get(p)!;
+              break;
+            }
           }
 
           const fileId = crypto.randomUUID();

@@ -290,6 +290,11 @@ export class GoogleDriveProvider implements StorageProvider {
       // Build query string
       const qParts: string[] = [];
 
+      // Ownership: Restrict normal Google Drive metadata synchronization to items owned by the connected Google account
+      if (!options?.includeShared) {
+        qParts.push("'me' in owners");
+      }
+
       if (options?.includeTrashed) {
         // Include both or only trashed
       } else {
@@ -318,24 +323,41 @@ export class GoogleDriveProvider implements StorageProvider {
           q,
           pageSize,
           pageToken: currentPageToken,
-          fields: 'nextPageToken, files(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred)',
-          orderBy: 'folder,modifiedTime desc',
+          fields: 'nextPageToken, files(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred, ownedByMe, owners(emailAddress, displayName, me))',
+          orderBy: 'modifiedTime desc',
         });
 
-        const pageFiles: ProviderFileMetadata[] = (res.data.files || []).map((f) => ({
-          providerFileId: f.id || '',
-          name: f.name || 'Untitled',
-          mimeType: f.mimeType || 'application/octet-stream',
-          sizeBytes: f.size ? Number(f.size) : 0,
-          parentFolderId: f.parents && f.parents.length > 0 ? f.parents[0] : null,
-          isFolder: f.mimeType === 'application/vnd.google-apps.folder',
-          webUrl: f.webViewLink || undefined,
-          md5Checksum: f.md5Checksum || undefined,
-          isStarred: Boolean(f.starred),
-          isTrashed: Boolean(f.trashed),
-          createdAt: f.createdTime || new Date().toISOString(),
-          modifiedAt: f.modifiedTime || new Date().toISOString(),
-        }));
+        const pageFiles: ProviderFileMetadata[] = [];
+        for (const f of res.data.files || []) {
+          const isOwned = f.ownedByMe !== undefined
+            ? Boolean(f.ownedByMe)
+            : (f.owners && Array.isArray(f.owners) && f.owners.length > 0
+                ? f.owners.some((o: any) => Boolean(o.me))
+                : true);
+
+          if (!options?.includeShared && !isOwned) {
+            continue;
+          }
+
+          const parents = Array.isArray(f.parents) ? f.parents : [];
+          pageFiles.push({
+            providerFileId: f.id || '',
+            name: f.name || 'Untitled',
+            mimeType: f.mimeType || 'application/octet-stream',
+            sizeBytes: f.size ? Number(f.size) : 0,
+            parentFolderId: parents.length > 0 ? parents[0] : null,
+            parentFolderIds: parents,
+            isFolder: f.mimeType === 'application/vnd.google-apps.folder',
+            webUrl: f.webViewLink || undefined,
+            md5Checksum: f.md5Checksum || undefined,
+            isStarred: Boolean(f.starred),
+            isTrashed: Boolean(f.trashed),
+            isShared: !isOwned,
+            ownedByMe: isOwned,
+            createdAt: f.createdTime || new Date().toISOString(),
+            modifiedAt: f.modifiedTime || new Date().toISOString(),
+          });
+        }
 
         allFiles.push(...pageFiles);
         currentPageToken = res.data.nextPageToken || undefined;
@@ -426,7 +448,7 @@ export class GoogleDriveProvider implements StorageProvider {
         const res = await drive.changes.list({
           pageToken: currentPageToken,
           pageSize,
-          fields: 'nextPageToken, newStartPageToken, changes(fileId, removed, time, file(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred))',
+          fields: 'nextPageToken, newStartPageToken, changes(fileId, removed, time, file(id, name, mimeType, size, parents, createdTime, modifiedTime, webViewLink, iconLink, md5Checksum, trashed, starred, ownedByMe, owners(emailAddress, displayName, me)))',
           includeRemoved: options.includeRemoved ?? true,
           supportsAllDrives: false,
           includeItemsFromAllDrives: false,
@@ -436,17 +458,27 @@ export class GoogleDriveProvider implements StorageProvider {
         const pageChanges: ProviderChangeItem[] = (res.data.changes || []).map((c) => {
           let fileMeta: ProviderFileMetadata | null = null;
           if (c.file && !c.removed) {
+            const isOwned = c.file.ownedByMe !== undefined
+              ? Boolean(c.file.ownedByMe)
+              : (c.file.owners && Array.isArray(c.file.owners) && c.file.owners.length > 0
+                  ? c.file.owners.some((o: any) => Boolean(o.me))
+                  : true);
+
+            const parents = Array.isArray(c.file.parents) ? c.file.parents : [];
             fileMeta = {
               providerFileId: c.file.id || c.fileId || '',
               name: c.file.name || 'Untitled',
               mimeType: c.file.mimeType || 'application/octet-stream',
               sizeBytes: c.file.size ? Number(c.file.size) : 0,
-              parentFolderId: c.file.parents && c.file.parents.length > 0 ? c.file.parents[0] : null,
+              parentFolderId: parents.length > 0 ? parents[0] : null,
+              parentFolderIds: parents,
               isFolder: c.file.mimeType === 'application/vnd.google-apps.folder',
               webUrl: c.file.webViewLink || undefined,
               md5Checksum: c.file.md5Checksum || undefined,
               isStarred: Boolean(c.file.starred),
               isTrashed: Boolean(c.file.trashed),
+              isShared: !isOwned,
+              ownedByMe: isOwned,
               createdAt: c.file.createdTime || new Date().toISOString(),
               modifiedAt: c.file.modifiedTime || new Date().toISOString(),
             };

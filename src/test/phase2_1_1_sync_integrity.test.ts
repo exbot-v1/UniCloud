@@ -23,6 +23,7 @@ import { GoogleDriveProvider } from '../server/providers/GoogleDriveProvider.js'
 import { SyncService } from '../server/services/SyncService.js';
 import { accountService } from '../server/services/AccountService.js';
 import { ProviderRegistry } from '../server/providers/ProviderRegistry.js';
+import { fileService } from '../server/services/FileService.js';
 import { ProviderFileListResult } from '../types/provider.js';
 
 // Test mock provider that extends GoogleDriveProvider and mocks getDriveClient
@@ -659,6 +660,418 @@ describe('Phase 2.1.1 — Google Drive Pagination & Stale Reconciliation Integri
       assert.match(latestHistory.error_message, /Pagination truncated/i, 'History note must record truncation reason');
     } finally {
       // Restore original provider and credentials method
+      (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, originalProvider);
+      accountService.getDecryptedCredentials = origGetCreds;
+    }
+  });
+});
+
+describe('Phase 2.1.2 — Google Drive Ownership & Hierarchy Sync Integrity', () => {
+  const userId = 'user_ownership_test_01';
+  const accountId = 'acc_ownership_test_01';
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  test('15. GoogleDriveProvider.listFiles includes \'me\' in owners and excludes shared items by default', async () => {
+    let capturedQuery = '';
+    const mockProvider = new (class extends GoogleDriveProvider {
+      public getOAuth2Client(): any {
+        return { setCredentials: () => {} };
+      }
+      protected getDriveClient(): any {
+        return {
+          files: {
+            list: async (params: { q: string; pageToken?: string }) => {
+              capturedQuery = params.q;
+              return {
+                data: {
+                  files: [
+                    {
+                      id: 'g_owned_1',
+                      name: 'My Personal Folder',
+                      mimeType: 'application/vnd.google-apps.folder',
+                      owners: [{ me: true, displayName: 'Me' }],
+                      shared: false,
+                      parents: [],
+                      trashed: false,
+                    },
+                    {
+                      id: 'g_shared_1',
+                      name: 'Colleague Shared Folder',
+                      mimeType: 'application/vnd.google-apps.folder',
+                      owners: [{ me: false, displayName: 'Other Person' }],
+                      shared: true,
+                      parents: [],
+                      trashed: false,
+                    },
+                  ],
+                },
+              };
+            },
+          },
+        };
+      }
+    })();
+
+    const result = await mockProvider.listFiles('mock_token', { fetchAllPages: false });
+    assert.match(capturedQuery, /'me' in owners/, 'Query must filter by \'me\' in owners by default');
+    assert.equal(result.files.length, 1, 'Shared file must be filtered out when includeShared is false');
+    assert.equal(result.files[0].providerFileId, 'g_owned_1');
+    assert.equal(result.files[0].ownedByMe, true);
+    assert.equal(result.files[0].isShared, false);
+  });
+
+  test('16. SyncService full sync includes owned folders and excludes shared items', async () => {
+    // Seed storage account
+    await query(
+      `INSERT INTO storage_accounts (
+        id, user_id, provider, provider_account_id, email, display_name,
+        encrypted_access_token, encrypted_refresh_token, token_iv, token_auth_tag,
+        token_expires_at, total_bytes, used_bytes, status, last_synced_at, created_at, updated_at
+      ) VALUES ($1, $2, 'google_drive', 'prov_own_01', 'owner@example.com', 'Owner User',
+        'enc_access', 'enc_refresh', 'iv123', 'tag123',
+        NOW(), 15000000000, 5000000000, 'active', NOW(), NOW(), NOW())`,
+      [accountId, userId]
+    );
+
+    const mockE2eProvider = new (class extends GoogleDriveProvider {
+      public getOAuth2Client(): any {
+        return { setCredentials: () => {} };
+      }
+      public async getStartPageToken(): Promise<string> {
+        return 'token_test_16';
+      }
+      public async getStorageQuota(): Promise<any> {
+        return {
+          totalBytes: 15000000000,
+          usedBytes: 5000000000,
+          freeBytes: 10000000000,
+          usagePercentage: 33.33,
+        };
+      }
+      public async refreshAuthentication(): Promise<any> {
+        return { accessToken: 'refreshed_tok' };
+      }
+      public async listFiles(): Promise<ProviderFileListResult> {
+        return {
+          files: [
+            {
+              providerFileId: 'g_owned_f1',
+              name: 'My Owned Folder',
+              mimeType: 'application/vnd.google-apps.folder',
+              sizeBytes: 0,
+              parentFolderId: null,
+              isFolder: true,
+              isStarred: false,
+              isTrashed: false,
+              ownedByMe: true,
+              isShared: false,
+              createdAt: new Date().toISOString(),
+              modifiedAt: new Date().toISOString(),
+            },
+            {
+              providerFileId: 'g_owned_doc',
+              name: 'My Owned Doc.txt',
+              mimeType: 'text/plain',
+              sizeBytes: 1024,
+              parentFolderId: 'g_owned_f1',
+              isFolder: false,
+              isStarred: false,
+              isTrashed: false,
+              ownedByMe: true,
+              isShared: false,
+              createdAt: new Date().toISOString(),
+              modifiedAt: new Date().toISOString(),
+            },
+          ],
+          paginationComplete: true,
+        };
+      }
+    })();
+
+    const originalProvider = ProviderRegistry.get(ProviderType.GOOGLE_DRIVE);
+    (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, mockE2eProvider);
+
+    const origGetCreds = accountService.getDecryptedCredentials.bind(accountService);
+    accountService.getDecryptedCredentials = async () => ({
+      accessToken: 'test_acc_tok',
+      refreshToken: 'test_ref_tok',
+      tokenExpiresAt: new Date(Date.now() + 3600000).toISOString(),
+      email: 'owner@example.com',
+      provider: ProviderType.GOOGLE_DRIVE,
+    });
+
+    try {
+      const syncService = new SyncService();
+      const syncResult = await syncService.syncAccount(userId, accountId);
+
+      assert.equal(syncResult.filesAddedOrUpdated, 1, '1 owned file should be added');
+      assert.equal(syncResult.foldersProcessed, 1, '1 owned folder should be processed');
+
+      // Check DB for owned folder
+      const folRes = await query(`SELECT * FROM virtual_folders WHERE storage_account_id = $1 AND user_id = $2`, [accountId, userId]);
+      assert.equal(folRes.rows.length, 1);
+      assert.equal(folRes.rows[0].name, 'My Owned Folder');
+      assert.match(folRes.rows[0].id, uuidRegex, 'Folder ID must be a valid UUID');
+
+      // Check DB for owned file
+      const fileRes = await query(`SELECT * FROM virtual_files WHERE storage_account_id = $1 AND user_id = $2`, [accountId, userId]);
+      assert.equal(fileRes.rows.length, 1);
+      assert.equal(fileRes.rows[0].name, 'My Owned Doc.txt');
+      assert.equal(fileRes.rows[0].parent_id, folRes.rows[0].id, 'File parent_id must point to folder UUID');
+    } finally {
+      (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, originalProvider);
+      accountService.getDecryptedCredentials = origGetCreds;
+    }
+  });
+
+  test('17. Nested parent mapping resolves root -> subfolder -> file to valid UUID hierarchy', async () => {
+    const nestedUserId = 'user_nested_test_01';
+    const nestedAccountId = 'acc_nested_test_01';
+
+    // Seed storage account
+    await query(
+      `INSERT INTO storage_accounts (
+        id, user_id, provider, provider_account_id, email, display_name,
+        encrypted_access_token, encrypted_refresh_token, token_iv, token_auth_tag,
+        token_expires_at, total_bytes, used_bytes, status, last_synced_at, created_at, updated_at
+      ) VALUES ($1, $2, 'google_drive', 'prov_nest_01', 'nested@example.com', 'Nested User',
+        'enc_access', 'enc_refresh', 'iv123', 'tag123',
+        NOW(), 15000000000, 5000000000, 'active', NOW(), NOW(), NOW())`,
+      [nestedAccountId, nestedUserId]
+    );
+
+    const mockNestedProvider = new (class extends GoogleDriveProvider {
+      public getOAuth2Client(): any {
+        return { setCredentials: () => {} };
+      }
+      public async getStartPageToken(): Promise<string> {
+        return 'token_test_17';
+      }
+      public async getStorageQuota(): Promise<any> {
+        return {
+          totalBytes: 15000000000,
+          usedBytes: 5000000000,
+          freeBytes: 10000000000,
+          usagePercentage: 33.33,
+        };
+      }
+      public async refreshAuthentication(): Promise<any> {
+        return { accessToken: 'refreshed_tok' };
+      }
+      public async listFiles(): Promise<ProviderFileListResult> {
+        return {
+          files: [
+            {
+              providerFileId: 'g_root_dir',
+              name: 'Projects',
+              mimeType: 'application/vnd.google-apps.folder',
+              sizeBytes: 0,
+              parentFolderId: null,
+              parentFolderIds: [],
+              isFolder: true,
+              isStarred: false,
+              isTrashed: false,
+              ownedByMe: true,
+              createdAt: new Date().toISOString(),
+              modifiedAt: new Date().toISOString(),
+            },
+            {
+              providerFileId: 'g_sub_dir',
+              name: '2026 Work',
+              mimeType: 'application/vnd.google-apps.folder',
+              sizeBytes: 0,
+              parentFolderId: 'g_root_dir',
+              parentFolderIds: ['g_root_dir'],
+              isFolder: true,
+              isStarred: false,
+              isTrashed: false,
+              ownedByMe: true,
+              createdAt: new Date().toISOString(),
+              modifiedAt: new Date().toISOString(),
+            },
+            {
+              providerFileId: 'g_file_nested',
+              name: 'specs.pdf',
+              mimeType: 'application/pdf',
+              sizeBytes: 2048,
+              parentFolderId: 'g_sub_dir',
+              parentFolderIds: ['g_sub_dir'],
+              isFolder: false,
+              isStarred: false,
+              isTrashed: false,
+              ownedByMe: true,
+              createdAt: new Date().toISOString(),
+              modifiedAt: new Date().toISOString(),
+            },
+          ],
+          paginationComplete: true,
+        };
+      }
+    })();
+
+    const originalProvider = ProviderRegistry.get(ProviderType.GOOGLE_DRIVE);
+    (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, mockNestedProvider);
+
+    const origGetCreds = accountService.getDecryptedCredentials.bind(accountService);
+    accountService.getDecryptedCredentials = async () => ({
+      accessToken: 'test_acc_tok',
+      refreshToken: 'test_ref_tok',
+      tokenExpiresAt: new Date(Date.now() + 3600000).toISOString(),
+      email: 'nested@example.com',
+      provider: ProviderType.GOOGLE_DRIVE,
+    });
+
+    try {
+      const syncService = new SyncService();
+      await syncService.syncAccount(nestedUserId, nestedAccountId);
+
+      // Verify Root Folder
+      const rootFolders = await query(`SELECT * FROM virtual_folders WHERE storage_account_id = $1 AND provider_folder_id = $2`, [nestedAccountId, 'g_root_dir']);
+      assert.equal(rootFolders.rows.length, 1);
+      const rootFolder = rootFolders.rows[0];
+      assert.match(rootFolder.id, uuidRegex, 'Root folder must have valid UUID');
+      assert.equal(rootFolder.parent_id, null, 'Root folder must have null parent_id');
+
+      // Verify Subfolder
+      const subFolders = await query(`SELECT * FROM virtual_folders WHERE storage_account_id = $1 AND provider_folder_id = $2`, [nestedAccountId, 'g_sub_dir']);
+      assert.equal(subFolders.rows.length, 1);
+      const subFolder = subFolders.rows[0];
+      assert.match(subFolder.id, uuidRegex, 'Subfolder must have valid UUID');
+      assert.equal(subFolder.parent_id, rootFolder.id, 'Subfolder parent_id must equal root folder UUID');
+      assert.notEqual(subFolder.parent_id, 'g_root_dir', 'Subfolder parent_id must not be raw Google ID');
+
+      // Verify File
+      const files = await query(`SELECT * FROM virtual_files WHERE storage_account_id = $1 AND provider_file_id = $2`, [nestedAccountId, 'g_file_nested']);
+      assert.equal(files.rows.length, 1);
+      const file = files.rows[0];
+      assert.match(file.id, uuidRegex, 'File must have valid UUID');
+      assert.equal(file.parent_id, subFolder.id, 'File parent_id must equal subfolder UUID');
+      assert.notEqual(file.parent_id, 'g_sub_dir', 'File parent_id must not be raw Google ID');
+
+      // Test FileService navigation with both UUID and provider ID
+      const foldersInRootByUuid = await fileService.getFoldersInFolder(nestedUserId, rootFolder.id);
+      assert.equal(foldersInRootByUuid.length, 1);
+      assert.equal(foldersInRootByUuid[0].name, '2026 Work');
+
+      const foldersInRootByProviderId = await fileService.getFoldersInFolder(nestedUserId, 'g_root_dir');
+      assert.equal(foldersInRootByProviderId.length, 1);
+      assert.equal(foldersInRootByProviderId[0].name, '2026 Work');
+
+      const filesInSubByUuid = await fileService.getFilesInFolder(nestedUserId, subFolder.id);
+      assert.equal(filesInSubByUuid.length, 1);
+      assert.equal(filesInSubByUuid[0].name, 'specs.pdf');
+
+      const filesInSubByProviderId = await fileService.getFilesInFolder(nestedUserId, 'g_sub_dir');
+      assert.equal(filesInSubByProviderId.length, 1);
+      assert.equal(filesInSubByProviderId[0].name, 'specs.pdf');
+    } finally {
+      (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, originalProvider);
+      accountService.getDecryptedCredentials = origGetCreds;
+    }
+  });
+
+  test('18. Stale mapping reconciliation marks obsolete shared folders trashed and resets orphaned children to root', async () => {
+    const reconUserId = 'user_recon_test_01';
+    const reconAccountId = 'acc_recon_test_01';
+
+    // Seed storage account
+    await query(
+      `INSERT INTO storage_accounts (
+        id, user_id, provider, provider_account_id, email, display_name,
+        encrypted_access_token, encrypted_refresh_token, token_iv, token_auth_tag,
+        token_expires_at, total_bytes, used_bytes, status, last_synced_at, created_at, updated_at
+      ) VALUES ($1, $2, 'google_drive', 'prov_recon_01', 'recon@example.com', 'Recon User',
+        'enc_access', 'enc_refresh', 'iv123', 'tag123',
+        NOW(), 15000000000, 5000000000, 'active', NOW(), NOW(), NOW())`,
+      [reconAccountId, reconUserId]
+    );
+
+    // Pre-seed an obsolete shared folder from a previous buggy sync
+    const staleSharedFolderId = crypto.randomUUID();
+    await query(
+      `INSERT INTO virtual_folders (
+        id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
+        name, is_starred, is_trashed, created_at, updated_at
+      ) VALUES ($1, $2, NULL, $3, $4, $5, $6, false, false, NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day')`,
+      [staleSharedFolderId, reconUserId, reconAccountId, ProviderType.GOOGLE_DRIVE, 'g_stale_shared_fol', 'Old Shared Team Folder']
+    );
+
+    // Pre-seed an owned file that was placed inside that shared folder
+    const ownedFileId = crypto.randomUUID();
+    await query(
+      `INSERT INTO virtual_files (
+        id, user_id, storage_account_id, parent_id, provider, provider_file_id,
+        name, mime_type, size_bytes, is_starred, is_trashed, created_at, updated_at, synced_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 100, false, false, NOW(), NOW(), NOW())`,
+      [ownedFileId, reconUserId, reconAccountId, staleSharedFolderId, ProviderType.GOOGLE_DRIVE, 'g_owned_file_inside', 'Preserved File.txt', 'text/plain']
+    );
+
+    // Mock provider returns only the owned file, omitting the shared folder
+    const mockReconProvider = new (class extends GoogleDriveProvider {
+      public getOAuth2Client(): any {
+        return { setCredentials: () => {} };
+      }
+      public async getStartPageToken(): Promise<string> {
+        return 'token_test_18';
+      }
+      public async getStorageQuota(): Promise<any> {
+        return {
+          totalBytes: 15000000000,
+          usedBytes: 5000000000,
+          freeBytes: 10000000000,
+          usagePercentage: 33.33,
+        };
+      }
+      public async refreshAuthentication(): Promise<any> {
+        return { accessToken: 'refreshed_tok' };
+      }
+      public async listFiles(): Promise<ProviderFileListResult> {
+        return {
+          files: [
+            {
+              providerFileId: 'g_owned_file_inside',
+              name: 'Preserved File.txt',
+              mimeType: 'text/plain',
+              sizeBytes: 100,
+              parentFolderId: null, // Upstream parent was shared, so Google omitted it or moved to root
+              isFolder: false,
+              isStarred: false,
+              isTrashed: false,
+              ownedByMe: true,
+              createdAt: new Date().toISOString(),
+              modifiedAt: new Date().toISOString(),
+            },
+          ],
+          paginationComplete: true,
+        };
+      }
+    })();
+
+    const originalProvider = ProviderRegistry.get(ProviderType.GOOGLE_DRIVE);
+    (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, mockReconProvider);
+
+    const origGetCreds = accountService.getDecryptedCredentials.bind(accountService);
+    accountService.getDecryptedCredentials = async () => ({
+      accessToken: 'test_acc_tok',
+      refreshToken: 'test_ref_tok',
+      tokenExpiresAt: new Date(Date.now() + 3600000).toISOString(),
+      email: 'recon@example.com',
+      provider: ProviderType.GOOGLE_DRIVE,
+    });
+
+    try {
+      const syncService = new SyncService();
+      await syncService.syncAccount(reconUserId, reconAccountId);
+
+      // Verify the stale shared folder is now marked as trashed
+      const staleFolCheck = await query(`SELECT * FROM virtual_folders WHERE id = $1`, [staleSharedFolderId]);
+      assert.equal(staleFolCheck.rows[0].is_trashed, true, 'Obsolete shared folder must be marked trashed');
+
+      // Verify the owned file was NOT trashed, and its parent_id was updated to root (null)
+      const ownedFileCheck = await query(`SELECT * FROM virtual_files WHERE id = $1`, [ownedFileId]);
+      assert.equal(ownedFileCheck.rows[0].is_trashed, false, 'Owned file must remain active');
+      assert.equal(ownedFileCheck.rows[0].parent_id, null, 'Owned file parent_id must be reset to root (null)');
+    } finally {
       (ProviderRegistry as any).providers.set(ProviderType.GOOGLE_DRIVE, originalProvider);
       accountService.getDecryptedCredentials = origGetCreds;
     }

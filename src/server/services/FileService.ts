@@ -93,6 +93,28 @@ export class FileService {
   ): Promise<VirtualFile[]> {
     logger.debug(`FileService.getFilesInFolder for user ${userId}, folder ${folderId}`);
 
+    let targetFolderUuid: string | null = null;
+    if (folderId !== undefined && folderId !== null) {
+      const cleanFolderId = normalizeFolderId(folderId);
+      if (cleanFolderId !== null) {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanFolderId);
+        if (isUuid) {
+          targetFolderUuid = cleanFolderId;
+        } else {
+          // If a provider folder ID was passed, resolve it to the user's virtual folder UUID
+          const folderRes = await query<{ id: string }>(
+            `SELECT id FROM virtual_folders WHERE user_id = $1 AND provider_folder_id = $2 LIMIT 1`,
+            [userId, cleanFolderId]
+          );
+          if (folderRes.rows.length > 0) {
+            targetFolderUuid = folderRes.rows[0].id;
+          } else {
+            return [];
+          }
+        }
+      }
+    }
+
     let sql = `
       SELECT * FROM virtual_files 
       WHERE user_id = $1
@@ -100,9 +122,8 @@ export class FileService {
     const params: any[] = [userId];
 
     if (folderId !== undefined && folderId !== null) {
-      const cleanFolderId = normalizeFolderId(folderId);
-      if (cleanFolderId !== null) {
-        params.push(cleanFolderId);
+      if (targetFolderUuid !== null) {
+        params.push(targetFolderUuid);
         sql += ` AND parent_id = $${params.length}`;
       } else {
         sql += ` AND parent_id IS NULL`;
@@ -145,6 +166,28 @@ export class FileService {
     folderId: string | null = null,
     options?: { isTrashed?: boolean; isStarred?: boolean }
   ): Promise<VirtualFolder[]> {
+    let targetFolderUuid: string | null = null;
+    if (folderId !== null && folderId !== undefined) {
+      const cleanFolderId = normalizeFolderId(folderId);
+      if (cleanFolderId !== null) {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanFolderId);
+        if (isUuid) {
+          targetFolderUuid = cleanFolderId;
+        } else {
+          // If a provider folder ID was passed, resolve it to the user's virtual folder UUID
+          const folderRes = await query<{ id: string }>(
+            `SELECT id FROM virtual_folders WHERE user_id = $1 AND provider_folder_id = $2 LIMIT 1`,
+            [userId, cleanFolderId]
+          );
+          if (folderRes.rows.length > 0) {
+            targetFolderUuid = folderRes.rows[0].id;
+          } else {
+            return [];
+          }
+        }
+      }
+    }
+
     const isTrashed = options?.isTrashed ?? false;
     let sql = `
       SELECT * FROM virtual_folders 
@@ -157,9 +200,8 @@ export class FileService {
     }
 
     if (folderId !== null && folderId !== undefined) {
-      const cleanFolderId = normalizeFolderId(folderId);
-      if (cleanFolderId !== null) {
-        params.push(cleanFolderId);
+      if (targetFolderUuid !== null) {
+        params.push(targetFolderUuid);
         sql += ` AND parent_id = $${params.length}`;
       } else {
         sql += ` AND parent_id IS NULL`;
@@ -219,11 +261,19 @@ export class FileService {
   async getFolderById(userId: string, folderId: string): Promise<VirtualFolder> {
     const cleanFolderId = normalizeFolderId(folderId) || folderId;
     logger.debug(`FileService.getFolderById ${cleanFolderId} for user ${userId}`);
-    const result = await query<DbVirtualFolder>(
-      `SELECT * FROM virtual_folders 
-       WHERE id = $1 AND user_id = $2`,
-      [cleanFolderId, userId]
-    );
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanFolderId);
+    const result = isUuid
+      ? await query<DbVirtualFolder>(
+          `SELECT * FROM virtual_folders 
+           WHERE id = $1 AND user_id = $2`,
+          [cleanFolderId, userId]
+        )
+      : await query<DbVirtualFolder>(
+          `SELECT * FROM virtual_folders 
+           WHERE provider_folder_id = $1 AND user_id = $2 LIMIT 1`,
+          [cleanFolderId, userId]
+        );
 
     if (result.rowCount === 0) {
       throw new AppError(

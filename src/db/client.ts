@@ -1192,6 +1192,25 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     return { rows: [], rowCount: count };
   }
 
+  if (/UPDATE virtual_files SET parent_id = NULL/i.test(normalizedSql)) {
+    const userId = params[0];
+    let count = 0;
+    const trashedFolderIds = new Set<string>();
+    for (const fol of memoryDb.virtualFolders.values()) {
+      if (fol.user_id === userId && fol.is_trashed) {
+        trashedFolderIds.add(fol.id);
+      }
+    }
+    for (const f of memoryDb.virtualFiles.values()) {
+      if (f.user_id === userId && !f.is_trashed && f.parent_id && trashedFolderIds.has(f.parent_id)) {
+        f.parent_id = null;
+        f.updated_at = new Date().toISOString();
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
+  }
+
   if (/UPDATE virtual_files/i.test(normalizedSql)) {
     // Handle rename, star, restore, move, etc.
     const fileId = params[params.length - 2];
@@ -1352,19 +1371,60 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       return { rows: [], rowCount: 0 };
     }
 
+    if (/provider_folder_id/i.test(normalizedSql)) {
+      const accountId = params[0];
+      const providerFolderId = params[1];
+      const userId = params[2];
+      let updated = 0;
+      for (const f of memoryDb.virtualFolders.values()) {
+        if (f.storage_account_id === accountId && f.provider_folder_id === providerFolderId && (!userId || f.user_id === userId)) {
+          f.is_trashed = true;
+          f.trashed_at = new Date().toISOString();
+          f.updated_at = new Date().toISOString();
+          updated++;
+        }
+      }
+      return { rows: [], rowCount: updated };
+    }
+
     const accountId = params[0];
-    const providerFolderId = params[1];
-    const userId = params[2];
-    let updated = 0;
+    const userId = params[1];
+    const syncTimeStr = params[2];
+    const syncTime = new Date(syncTimeStr).getTime();
+    let count = 0;
     for (const f of memoryDb.virtualFolders.values()) {
-      if (f.storage_account_id === accountId && f.provider_folder_id === providerFolderId && (!userId || f.user_id === userId)) {
+      if (
+        f.storage_account_id === accountId &&
+        f.user_id === userId &&
+        !f.is_trashed &&
+        new Date(f.updated_at).getTime() < syncTime
+      ) {
         f.is_trashed = true;
         f.trashed_at = new Date().toISOString();
         f.updated_at = new Date().toISOString();
-        updated++;
+        count++;
       }
     }
-    return { rows: [], rowCount: updated };
+    return { rows: [], rowCount: count };
+  }
+
+  if (/UPDATE virtual_folders SET parent_id = NULL/i.test(normalizedSql)) {
+    const userId = params[0];
+    let count = 0;
+    const trashedFolderIds = new Set<string>();
+    for (const fol of memoryDb.virtualFolders.values()) {
+      if (fol.user_id === userId && fol.is_trashed) {
+        trashedFolderIds.add(fol.id);
+      }
+    }
+    for (const fol of memoryDb.virtualFolders.values()) {
+      if (fol.user_id === userId && !fol.is_trashed && fol.parent_id && trashedFolderIds.has(fol.parent_id)) {
+        fol.parent_id = null;
+        fol.updated_at = new Date().toISOString();
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
   }
 
   if (/UPDATE virtual_folders SET is_trashed = FALSE/i.test(normalizedSql)) {
@@ -1451,6 +1511,13 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       return { rows: [existingFolder as any], rowCount: 1 };
     }
 
+    let folderCreatedAt = params[baseIdx + 6] || new Date().toISOString();
+    let folderUpdatedAt = params[baseIdx + 7] || new Date().toISOString();
+    if (/INTERVAL/i.test(normalizedSql)) {
+      folderCreatedAt = new Date(Date.now() - 86400000).toISOString();
+      folderUpdatedAt = new Date(Date.now() - 86400000).toISOString();
+    }
+
     const folderObj = {
       id,
       user_id,
@@ -1462,8 +1529,8 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       is_starred,
       is_trashed,
       trashed_at: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      created_at: folderCreatedAt,
+      updated_at: folderUpdatedAt,
     };
     memoryDb.virtualFolders.set(id, folderObj);
     return { rows: [folderObj as any], rowCount: 1 };
@@ -1502,6 +1569,16 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
         const pIndex = parseInt(pMatch[1], 10) - 1;
         const targetParentId = params[pIndex];
         folders = folders.filter(f => f.parent_id === targetParentId);
+      }
+    }
+
+    // Filter provider_folder_id
+    if (/provider_folder_id =/i.test(normalizedSql)) {
+      const pfMatch = normalizedSql.match(/provider_folder_id = \$(\d+)/i);
+      if (pfMatch) {
+        const pfIndex = parseInt(pfMatch[1], 10) - 1;
+        const targetPfId = params[pfIndex];
+        folders = folders.filter(f => f.provider_folder_id === targetPfId);
       }
     }
 

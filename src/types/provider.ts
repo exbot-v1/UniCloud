@@ -17,12 +17,15 @@ export interface ProviderFileMetadata {
   sizeBytes: number;
   isFolder: boolean;
   parentFolderId?: string | null;
+  parentFolderIds?: string[];
   createdAt: string;
   modifiedAt: string;
   webUrl?: string;
   md5Checksum?: string;
   isStarred?: boolean;
   isTrashed?: boolean;
+  isShared?: boolean;
+  ownedByMe?: boolean;
 }
 
 export interface ProviderFileListOptions {
@@ -30,6 +33,7 @@ export interface ProviderFileListOptions {
   pageSize?: number;
   pageToken?: string;
   includeTrashed?: boolean;
+  includeShared?: boolean;
   query?: string;
   fetchAllPages?: boolean;
   maxPages?: number;
