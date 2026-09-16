@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { StorageAccount, StoragePoolSummary, AccountStatus } from '../types/account';
 import { formatBytes, formatDate, formatRelativeTime } from '../lib/formatters';
-import { authFetch } from '../lib/api';
+import { authFetch, parseApiResponse } from '../lib/api';
 import { useToast } from './Toast';
 
 interface AccountsViewProps {
@@ -67,15 +67,15 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
         body: JSON.stringify({ mode }),
       });
 
-      const json = await res.json();
-      if (res.ok && json.success) {
-        const discovered = json.data?.syncResult?.filesDiscovered ?? 0;
+      const parsed = await parseApiResponse(res);
+      if (parsed.ok) {
+        const discovered = parsed.data?.syncResult?.filesDiscovered ?? 0;
         success(`Synchronized ${account.email}. Discovered ${discovered} items.`);
         if (onRefreshAccounts) {
           await onRefreshAccounts();
         }
       } else {
-        error(json.error?.message || `Failed to synchronize ${account.email}`);
+        error(parsed.error?.message || `Failed to synchronize ${account.email} (HTTP ${res.status})`);
       }
     } catch (err: any) {
       error(err.message || `Network error synchronizing ${account.email}`);
@@ -97,8 +97,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
         body: JSON.stringify({ isEnabled: newEnabledState }),
       });
 
-      const json = await res.json();
-      if (res.ok && json.success) {
+      const parsed = await parseApiResponse(res);
+      if (parsed.ok) {
         if (newEnabledState) {
           success(`Account ${account.email} enabled for uploads.`);
         } else {
@@ -108,7 +108,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
           await onRefreshAccounts();
         }
       } else {
-        error(json.error?.message || `Failed to update account status.`);
+        error(parsed.error?.message || `Failed to update account status (HTTP ${res.status}).`);
       }
     } catch (err: any) {
       error(err.message || `Network error updating account.`);
@@ -127,15 +127,15 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
         method: 'DELETE',
       });
 
-      const json = await res.json();
-      if (res.ok && json.success) {
+      const parsed = await parseApiResponse(res);
+      if (parsed.ok) {
         success(`Disconnected ${disconnectModalAccount.email} from storage pool.`);
         setDisconnectModalAccount(null);
         if (onRefreshAccounts) {
           await onRefreshAccounts();
         }
       } else {
-        error(json.error?.message || `Failed to disconnect account.`);
+        error(parsed.error?.message || `Failed to disconnect account (HTTP ${res.status}).`);
       }
     } catch (err: any) {
       error(err.message || `Network error disconnecting account.`);

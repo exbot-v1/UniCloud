@@ -574,26 +574,35 @@ apiRouter.get('/auth/google/callback', (req: Request, res: Response) => {
  */
 apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Response) => {
   try {
+    const accountId = req.params.id?.trim();
+    if (!accountId) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'Account ID is required for synchronization.', 400);
+    }
+    const userId = req.user?.id;
+    if (!userId) {
+      throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+    }
+
     const mode = req.body?.mode || req.query?.mode;
     let syncResult;
 
     if (mode === 'full') {
-      syncResult = await syncService.syncAccount(req.user!.id, req.params.id);
+      syncResult = await syncService.syncAccount(userId, accountId);
     } else if (mode === 'delta') {
-      syncResult = await syncService.syncDelta(req.user!.id, req.params.id);
+      syncResult = await syncService.syncDelta(userId, accountId);
     } else {
       // Default: if verified complete initial sync AND change token exists, run incremental delta sync; otherwise run full sync
-      const isInitComplete = await syncService.isInitialSyncComplete(req.user!.id, req.params.id);
-      const token = await accountService.getChangeToken(req.user!.id, req.params.id);
+      const isInitComplete = await syncService.isInitialSyncComplete(userId, accountId);
+      const token = await accountService.getChangeToken(userId, accountId);
       if (token && isInitComplete) {
-        syncResult = await syncService.syncDelta(req.user!.id, req.params.id);
+        syncResult = await syncService.syncDelta(userId, accountId);
       } else {
-        syncResult = await syncService.syncAccount(req.user!.id, req.params.id);
+        syncResult = await syncService.syncAccount(userId, accountId);
       }
     }
 
-    const updatedAccount = await accountService.getAccountById(req.user!.id, req.params.id);
-    const pool = await storageService.getStoragePoolForUser(req.user!.id);
+    const updatedAccount = await accountService.getAccountById(userId, accountId);
+    const pool = await storageService.getStoragePoolForUser(userId);
 
     const response: ApiResponse<{
       syncResult: typeof syncResult;
@@ -611,6 +620,7 @@ apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Resp
         version: '1.3.0-phase3',
       },
     };
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json(response);
   } catch (err) {
     sendApiError(res, err);
@@ -623,9 +633,18 @@ apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Resp
  */
 apiRouter.post('/accounts/:id/sync/delta', requireAuth, async (req: Request, res: Response) => {
   try {
-    const syncResult = await syncService.syncDelta(req.user!.id, req.params.id);
-    const updatedAccount = await accountService.getAccountById(req.user!.id, req.params.id);
-    const pool = await storageService.getStoragePoolForUser(req.user!.id);
+    const accountId = req.params.id?.trim();
+    if (!accountId) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'Account ID is required for delta synchronization.', 400);
+    }
+    const userId = req.user?.id;
+    if (!userId) {
+      throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+    }
+
+    const syncResult = await syncService.syncDelta(userId, accountId);
+    const updatedAccount = await accountService.getAccountById(userId, accountId);
+    const pool = await storageService.getStoragePoolForUser(userId);
 
     const response: ApiResponse<{
       syncResult: typeof syncResult;
@@ -643,6 +662,7 @@ apiRouter.post('/accounts/:id/sync/delta', requireAuth, async (req: Request, res
         version: '1.3.0-phase3',
       },
     };
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json(response);
   } catch (err) {
     sendApiError(res, err);
@@ -1204,6 +1224,7 @@ apiRouter.post('/folders/:id/sync', requireAuth, async (req: Request, res: Respo
         version: '1.5.0-phase5',
       },
     };
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json(response);
   } catch (err) {
     sendApiError(res, err);

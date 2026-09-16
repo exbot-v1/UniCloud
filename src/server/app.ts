@@ -89,8 +89,8 @@ export function createApp(): Express {
     });
   });
 
-  // Centralized API error handling
-  app.use('/api', (err: any, _req: Request, res: Response, _next: NextFunction) => {
+  // Centralized API and application error handling: guarantees all errors return JSON
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     sendApiError(res, err);
   });
 

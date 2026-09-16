@@ -46,7 +46,7 @@ import {
 import { VirtualFile, VirtualFolder, ViewMode } from '../types/filesystem';
 import { StorageAccount } from '../types/account';
 import { cn, formatBytes, formatDate, normalizeFolderId } from '../lib/formatters';
-import { authFetch } from '../lib/api';
+import { authFetch, parseApiResponse } from '../lib/api';
 import { useToast } from './Toast';
 import { FilePreviewModal } from './FilePreviewModal';
 import { MoveCopyModal } from './MoveCopyModal';
@@ -331,11 +331,11 @@ export const FilesView: React.FC<FilesViewProps> = ({
     try {
       if (currentFolderId) {
         const res = await authFetch(`/api/folders/${currentFolderId}/sync`, { method: 'POST' });
-        const json = await res.json();
-        if (res.ok && json.success) {
-          success(`Folder synced: ${json.data?.filesCount ?? 0} files found`);
+        const parsed = await parseApiResponse(res);
+        if (parsed.ok) {
+          success(`Folder synced: ${parsed.data?.filesCount ?? 0} files found`);
         } else {
-          error(json.error?.message || 'Failed to synchronize folder');
+          error(parsed.error?.message || `Failed to synchronize folder (HTTP ${res.status})`);
         }
       } else {
         if (onRefreshStoragePool) {

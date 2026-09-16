@@ -105,7 +105,7 @@ export async function initializeServerlessInstance(): Promise<void> {
 /**
  * Standard Vercel Serverless Function Handler
  */
-export default async function handler(req: Request, res: Response) {
+export default async function handler(req: Request, res: Response): Promise<void> {
   try {
     await initializeServerlessInstance();
   } catch (err: any) {
@@ -115,7 +115,72 @@ export default async function handler(req: Request, res: Response) {
     return;
   }
 
-  return app(req, res);
+  // If response has already completed, return immediately
+  if ((res as any).ended || res.writableEnded) {
+    return;
+  }
+
+  return new Promise<void>((resolve) => {
+    let resolved = false;
+    const finishHandler = () => {
+      if (!resolved) {
+        resolved = true;
+        resolve();
+      }
+    };
+
+    if (typeof (res as any).once === 'function') {
+      (res as any).once('finish', finishHandler);
+      (res as any).once('close', finishHandler);
+    }
+
+    const origJson = res.json?.bind(res);
+    if (origJson) {
+      res.json = (body: any) => {
+        const result = origJson(body);
+        finishHandler();
+        return result;
+      };
+    }
+
+    const origSend = res.send?.bind(res);
+    if (origSend) {
+      res.send = (body: any) => {
+        const result = origSend(body);
+        finishHandler();
+        return result;
+      };
+    }
+
+    const origEnd = res.end?.bind(res);
+    if (origEnd) {
+      res.end = (...args: any[]) => {
+        const result = (origEnd as any)(...args);
+        finishHandler();
+        return result;
+      };
+    }
+
+    try {
+      app(req, res, (err: any) => {
+        if (err) {
+          try {
+            sendApiError(res, err);
+          } catch {
+            // ignore
+          }
+        }
+        finishHandler();
+      });
+    } catch (err: any) {
+      try {
+        sendApiError(res, err);
+      } catch {
+        // ignore
+      }
+      finishHandler();
+    }
+  });
 }
 
 export { app };

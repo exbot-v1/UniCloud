@@ -37,3 +37,69 @@ export async function authFetch(input: RequestInfo | URL, init?: RequestInit): P
     credentials: 'include',
   });
 }
+
+export interface SafeApiResponse<T = any> {
+  ok: boolean;
+  status: number;
+  data?: T;
+  error?: {
+    code?: string;
+    message: string;
+    details?: Record<string, unknown>;
+  };
+  rawText?: string;
+}
+
+/**
+ * Safely parse API response without throwing SyntaxError on non-JSON content.
+ * Preserves the actual HTTP status code and meaningful error message.
+ */
+export async function parseApiResponse<T = any>(res: Response): Promise<SafeApiResponse<T>> {
+  const contentType = res.headers.get('content-type') || '';
+  let json: any = null;
+  let rawText = '';
+
+  if (contentType.includes('application/json')) {
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+  } else {
+    try {
+      rawText = await res.text();
+      try {
+        json = JSON.parse(rawText);
+      } catch {
+        json = null;
+      }
+    } catch {
+      rawText = '';
+    }
+  }
+
+  if (json && typeof json === 'object') {
+    const isSuccess = res.ok && json.success !== false;
+    return {
+      ok: isSuccess,
+      status: res.status,
+      data: json.data,
+      error: json.error || (isSuccess ? undefined : { message: `Request failed with status ${res.status}` }),
+      rawText,
+    };
+  }
+
+  const safeSnippet = rawText ? rawText.replace(/<[^>]*>?/gm, '').trim().slice(0, 250) : '';
+  const fallbackMessage = safeSnippet
+    ? `Server error (${res.status}): ${safeSnippet}`
+    : `Server returned HTTP ${res.status} (${res.statusText || 'Error'})`;
+
+  return {
+    ok: false,
+    status: res.status,
+    error: {
+      message: fallbackMessage,
+    },
+    rawText,
+  };
+}
