@@ -1102,12 +1102,32 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     return { rows: [], rowCount: 0 };
   }
 
-  if (/SELECT .* FROM virtual_files WHERE storage_account_id = .* AND provider_file_id =/i.test(normalizedSql)) {
-    const accountId = params[0];
-    const providerFileId = params[1];
-    const files = Array.from(memoryDb.virtualFiles.values()).filter(
-      (f: any) => f.storage_account_id === accountId && f.provider_file_id === providerFileId
-    );
+  if (/SELECT .* FROM virtual_files WHERE/i.test(normalizedSql) && (/provider_file_id/i.test(normalizedSql) || (/storage_account_id/i.test(normalizedSql) && !/user_id/i.test(normalizedSql)))) {
+    let files = Array.from(memoryDb.virtualFiles.values());
+    if (/storage_account_id/i.test(normalizedSql)) {
+      const match = normalizedSql.match(/storage_account_id\s*=\s*\$(\d+)/i);
+      if (match) {
+        const idx = parseInt(match[1], 10) - 1;
+        const accId = params[idx];
+        files = files.filter(f => f.storage_account_id === accId);
+      }
+    }
+    if (/provider_file_id/i.test(normalizedSql)) {
+      const match = normalizedSql.match(/provider_file_id\s*=\s*\$(\d+)/i);
+      const litMatch = normalizedSql.match(/provider_file_id\s*=\s*'([^']+)'/i);
+      if (match) {
+        const idx = parseInt(match[1], 10) - 1;
+        const pfId = params[idx];
+        files = files.filter(f => f.provider_file_id === pfId);
+      } else if (litMatch) {
+        files = files.filter(f => f.provider_file_id === litMatch[1]);
+      }
+    }
+    if (/is_trashed = false/i.test(normalizedSql)) {
+      files = files.filter(f => !f.is_trashed);
+    } else if (/is_trashed = true/i.test(normalizedSql)) {
+      files = files.filter(f => f.is_trashed);
+    }
     return { rows: files as any[], rowCount: files.length };
   }
 
@@ -1407,24 +1427,33 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     return { rows: [], rowCount: 0 };
   }
 
-  if (/SELECT .* FROM virtual_folders WHERE storage_account_id = .* AND provider_folder_id =/i.test(normalizedSql)) {
-    const accountId = params[0];
-    const providerFolderId = params[1];
-    const folders: any[] = [];
-    for (const fol of memoryDb.virtualFolders.values()) {
-      if (fol.storage_account_id === accountId && fol.provider_folder_id === providerFolderId) {
-        folders.push(fol);
+  if (/SELECT .* FROM virtual_folders WHERE/i.test(normalizedSql) && (/provider_folder_id/i.test(normalizedSql) || /storage_account_id/i.test(normalizedSql))) {
+    let folders = Array.from(memoryDb.virtualFolders.values());
+    if (/storage_account_id/i.test(normalizedSql)) {
+      const match = normalizedSql.match(/storage_account_id\s*=\s*\$(\d+)/i);
+      if (match) {
+        const idx = parseInt(match[1], 10) - 1;
+        const accId = params[idx];
+        folders = folders.filter(f => f.storage_account_id === accId);
       }
     }
-    return { rows: folders as any[], rowCount: folders.length };
-  }
-
-  if (/SELECT .* FROM virtual_folders WHERE storage_account_id =/i.test(normalizedSql)) {
-    const accountId = params[0];
-    const folders: any[] = [];
-    for (const fol of memoryDb.virtualFolders.values()) {
-      if (fol.storage_account_id === accountId) {
-        folders.push(fol);
+    if (/user_id/i.test(normalizedSql)) {
+      const match = normalizedSql.match(/user_id\s*=\s*\$(\d+)/i);
+      if (match) {
+        const idx = parseInt(match[1], 10) - 1;
+        const uId = params[idx];
+        folders = folders.filter(f => f.user_id === uId);
+      }
+    }
+    if (/provider_folder_id/i.test(normalizedSql)) {
+      const match = normalizedSql.match(/provider_folder_id\s*=\s*\$(\d+)/i);
+      const litMatch = normalizedSql.match(/provider_folder_id\s*=\s*'([^']+)'/i);
+      if (match) {
+        const idx = parseInt(match[1], 10) - 1;
+        const pfId = params[idx];
+        folders = folders.filter(f => f.provider_folder_id === pfId);
+      } else if (litMatch) {
+        folders = folders.filter(f => f.provider_folder_id === litMatch[1]);
       }
     }
     return { rows: folders as any[], rowCount: folders.length };
@@ -1444,7 +1473,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       return { rows: [], rowCount: 0 };
     }
 
-    if (/provider_folder_id/i.test(normalizedSql)) {
+    if (/provider_folder_id\s*=/i.test(normalizedSql)) {
       const accountId = params[0];
       const providerFolderId = params[1];
       const userId = params[2];
@@ -1464,6 +1493,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     const userId = params[1];
     const syncTimeStr = params[2];
     const syncTime = new Date(syncTimeStr).getTime();
+    const excludedIds = (params[3] && Array.isArray(params[3])) ? new Set(params[3]) : new Set();
     let count = 0;
     for (const f of memoryDb.virtualFolders.values()) {
       if (
@@ -1472,6 +1502,13 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
         !f.is_trashed &&
         new Date(f.updated_at).getTime() < syncTime
       ) {
+        // Root safety: never mark synthetic / My Drive root folders as trashed during stale reconciliation
+        if (excludedIds.has(f.id)) continue;
+        if (f.provider_folder_id === 'root') continue;
+        const normName = f.name?.trim().toLowerCase();
+        if (normName === 'my drive') continue;
+        if ((f.parent_id === null || f.parent_id === undefined) && normName === 'root') continue;
+
         f.is_trashed = true;
         f.trashed_at = new Date().toISOString();
         f.updated_at = new Date().toISOString();
@@ -1501,16 +1538,63 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   if (/UPDATE virtual_folders SET is_trashed = FALSE/i.test(normalizedSql)) {
-    const folderId = params[0];
-    const userId = params[1];
-    const f = memoryDb.virtualFolders.get(folderId);
-    if (f && (!userId || f.user_id === userId)) {
-      f.is_trashed = false;
-      f.trashed_at = null;
-      f.updated_at = new Date().toISOString();
-      return { rows: [f as any], rowCount: 1 };
+    if (/WHERE id =/i.test(normalizedSql)) {
+      const folderId = params[0];
+      const userId = params[1];
+      const f = memoryDb.virtualFolders.get(folderId);
+      if (f && (!userId || f.user_id === userId)) {
+        f.is_trashed = false;
+        f.trashed_at = null;
+        f.updated_at = new Date().toISOString();
+        return { rows: [f as any], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
     }
-    return { rows: [], rowCount: 0 };
+
+    if (/WHERE storage_account_id =/i.test(normalizedSql)) {
+      const accountId = params[0];
+      const userId = params[1];
+      let count = 0;
+      for (const f of memoryDb.virtualFolders.values()) {
+        if (f.storage_account_id === accountId && (!userId || f.user_id === userId)) {
+          let shouldUntrash = false;
+          if (Array.isArray(params[2])) {
+            if (params[2].includes(f.id)) {
+              shouldUntrash = true;
+            }
+          } else {
+            const normName = f.name?.trim().toLowerCase();
+            if (f.provider_folder_id === 'root' || normName === 'my drive' || ((f.parent_id === null || f.parent_id === undefined) && normName === 'root')) {
+              shouldUntrash = true;
+            }
+          }
+          if (shouldUntrash) {
+            f.is_trashed = false;
+            f.trashed_at = null;
+            f.updated_at = new Date().toISOString();
+            count++;
+          }
+        }
+      }
+      return { rows: [], rowCount: count };
+    }
+  }
+
+  if (/UPDATE virtual_folders SET (?:updated_at\s*=|is_trashed\s*=)/i.test(normalizedSql) && !/name\s*=/i.test(normalizedSql) && !/parent_id\s*=/i.test(normalizedSql)) {
+    if (/WHERE id =/i.test(normalizedSql)) {
+      const folderId = params[0];
+      const userId = params[1];
+      const f = memoryDb.virtualFolders.get(folderId);
+      if (f && (!userId || f.user_id === userId)) {
+        f.updated_at = new Date().toISOString();
+        if (/is_trashed\s*=\s*FALSE/i.test(normalizedSql)) {
+          f.is_trashed = false;
+          f.trashed_at = null;
+        }
+        return { rows: [f as any], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
   }
 
   if (/UPDATE virtual_folders SET parent_id =/i.test(normalizedSql)) {
@@ -1577,6 +1661,9 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
     }
 
     if (existingFolder) {
+      if (parent_id !== undefined && !hasExplicitNullParent) {
+        existingFolder.parent_id = parent_id;
+      }
       existingFolder.name = name;
       existingFolder.is_starred = is_starred;
       existingFolder.is_trashed = is_trashed;

@@ -125,6 +125,57 @@ export class SyncService {
   }
 
   /**
+   * Helper to detect whether a virtual folder row represents the synthetic or root folder.
+   * Supports Google Drive's "root" alias and any persisted My Drive root mapping.
+   * Does not rely solely on a hard-coded provider ID.
+   */
+  private isRootVirtualFolderRecord(
+    folder: {
+      id?: string;
+      provider_folder_id?: string | null;
+      parent_id?: string | null;
+      name?: string | null;
+    },
+    providerMetadata?: any
+  ): boolean {
+    if (!folder) return false;
+
+    // 1. Google Drive canonical alias
+    if (folder.provider_folder_id === 'root') {
+      return true;
+    }
+
+    // 2. Name is "My Drive" (case-insensitive)
+    const normName = folder.name?.trim().toLowerCase();
+    if (normName === 'my drive') {
+      return true;
+    }
+
+    // 3. Name is "root" with null/undefined parent
+    if (normName === 'root' && (folder.parent_id === null || folder.parent_id === undefined)) {
+      return true;
+    }
+
+    // 4. Matches account provider_metadata root mapping
+    if (providerMetadata) {
+      if (providerMetadata.rootFolderId && folder.provider_folder_id === providerMetadata.rootFolderId) {
+        return true;
+      }
+      if (providerMetadata.driveRootId && folder.provider_folder_id === providerMetadata.driveRootId) {
+        return true;
+      }
+      if (providerMetadata.virtualRootFolderId && folder.id === providerMetadata.virtualRootFolderId) {
+        return true;
+      }
+      if (providerMetadata.rootVirtualFolderId && folder.id === providerMetadata.rootVirtualFolderId) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Resolves the authoritative virtual folder UUID for a provider folder ID.
    * Checks the in-memory folderMap, then PostgreSQL virtual_folders, then queries Google Drive
    * to discover and upsert any missing parent folder.
@@ -305,15 +356,52 @@ export class SyncService {
       const initialFileItems = ownedFiles.filter((item) => !item.isFolder);
 
       // Load existing folder mappings for this account
-      const existingFolderRows = await query(
-        `SELECT id, provider_folder_id, parent_id FROM virtual_folders 
-         WHERE storage_account_id = $1 AND provider_folder_id IS NOT NULL`,
+      const existingFolderRows = await query<{
+        id: string;
+        provider_folder_id: string | null;
+        parent_id: string | null;
+        name: string;
+        is_trashed: boolean;
+      }>(
+        `SELECT id, provider_folder_id, parent_id, name, is_trashed FROM virtual_folders 
+         WHERE storage_account_id = $1`,
         [accountId]
       );
 
+      const rootVirtualFolderIds = new Set<string>();
+      const rootProviderFolderIds = new Set<string>(['root']);
+
+      const providerMetadata = (account as any)?.providerMetadata || (account as any)?.provider_metadata;
+      if (providerMetadata) {
+        if (providerMetadata.rootFolderId) rootProviderFolderIds.add(providerMetadata.rootFolderId);
+        if (providerMetadata.driveRootId) rootProviderFolderIds.add(providerMetadata.driveRootId);
+        if (providerMetadata.virtualRootFolderId) rootVirtualFolderIds.add(providerMetadata.virtualRootFolderId);
+        if (providerMetadata.rootVirtualFolderId) rootVirtualFolderIds.add(providerMetadata.rootVirtualFolderId);
+      }
+
+      for (const row of existingFolderRows.rows) {
+        if (this.isRootVirtualFolderRecord(row, providerMetadata)) {
+          rootVirtualFolderIds.add(row.id);
+          if (row.provider_folder_id) {
+            rootProviderFolderIds.add(row.provider_folder_id);
+          }
+        }
+      }
+
       const folderMap = new Map<string, string>(); // Google provider folder ID -> authoritative virtual_folders UUID
       for (const row of existingFolderRows.rows) {
-        folderMap.set(row.provider_folder_id, row.id);
+        if (row.provider_folder_id) {
+          folderMap.set(row.provider_folder_id, row.id);
+        }
+      }
+
+      // If we identified root virtual folders, ensure root aliases map to it in folderMap
+      for (const rootId of rootVirtualFolderIds) {
+        for (const pId of rootProviderFolderIds) {
+          if (!folderMap.has(pId)) {
+            folderMap.set(pId, rootId);
+          }
+        }
       }
 
       // PASS 1: Upsert all initially discovered folders and establish authoritative virtual folder IDs
@@ -452,6 +540,24 @@ export class SyncService {
           allQueriesPaginationComplete = false;
         }
 
+        const isTargetRoot =
+          target.providerFolderId === 'root' ||
+          rootProviderFolderIds.has(target.providerFolderId) ||
+          (target.virtualFolderId !== null && rootVirtualFolderIds.has(target.virtualFolderId));
+
+        // When child enumeration succeeds for the target folder:
+        // If it's the root/My Drive virtual folder, touch its updated_at timestamp and ensure is_trashed is false
+        if (target.virtualFolderId && isTargetRoot) {
+          await query(
+            `UPDATE virtual_folders SET
+              updated_at = NOW(),
+              is_trashed = FALSE,
+              trashed_at = NULL
+             WHERE id = $1 AND user_id = $2`,
+            [target.virtualFolderId, userId]
+          );
+        }
+
         for (const child of directChildren.files) {
           // Ownership rule: only sync owned files/folders, exclude unowned/shared items
           if (child.ownedByMe === false || child.isShared) {
@@ -461,8 +567,8 @@ export class SyncService {
           allDiscoveredItemIds.add(child.providerFileId);
 
           // Verify child is directly under target folder.
-          const isDirectChild = (target.providerFolderId === 'root')
-            ? (!child.parentFolderId || child.parentFolderId === 'root' || child.parentFolderIds?.includes('root'))
+          const isDirectChild = isTargetRoot
+            ? (!child.parentFolderId || child.parentFolderId === 'root' || rootProviderFolderIds.has(child.parentFolderId) || child.parentFolderIds?.includes('root') || child.parentFolderIds?.some(p => rootProviderFolderIds.has(p)))
             : (
                 child.parentFolderId === target.providerFolderId ||
                 (child.parentFolderIds && child.parentFolderIds.includes(target.providerFolderId))
@@ -472,7 +578,7 @@ export class SyncService {
             continue;
           }
 
-          if (!child.parentFolderId && target.providerFolderId !== 'root') {
+          if (!child.parentFolderId && !isTargetRoot) {
             child.parentFolderId = target.providerFolderId;
           }
 
@@ -652,16 +758,67 @@ export class SyncService {
         filesRemoved = staleFilesResult.rowCount || 0;
 
         // Reconcile stale / unowned folders (e.g. shared folders previously imported)
+        // Root-safe: Never mark the special My Drive/root virtual folder as trashed
+        const rootIdsArray = Array.from(rootVirtualFolderIds);
+        if (rootIdsArray.length > 0) {
+          await query(
+            `UPDATE virtual_folders SET
+              is_trashed = TRUE,
+              trashed_at = NOW(),
+              updated_at = NOW()
+             WHERE storage_account_id = $1
+               AND user_id = $2
+               AND is_trashed = FALSE
+               AND updated_at < $3
+               AND id != ALL($4)
+               AND (provider_folder_id IS NULL OR provider_folder_id != 'root')
+               AND LOWER(TRIM(name)) != 'my drive'
+               AND (parent_id IS NOT NULL OR LOWER(TRIM(name)) != 'root')`,
+            [accountId, userId, syncStartTime.toISOString(), rootIdsArray]
+          );
+        } else {
+          await query(
+            `UPDATE virtual_folders SET
+              is_trashed = TRUE,
+              trashed_at = NOW(),
+              updated_at = NOW()
+             WHERE storage_account_id = $1
+               AND user_id = $2
+               AND is_trashed = FALSE
+               AND updated_at < $3
+               AND (provider_folder_id IS NULL OR provider_folder_id != 'root')
+               AND LOWER(TRIM(name)) != 'my drive'
+               AND (parent_id IS NOT NULL OR LOWER(TRIM(name)) != 'root')`,
+            [accountId, userId, syncStartTime.toISOString()]
+          );
+        }
+
+        // Ensure any existing root/My Drive virtual folders remain active and not trashed
+        if (rootIdsArray.length > 0) {
+          await query(
+            `UPDATE virtual_folders SET
+              is_trashed = FALSE,
+              trashed_at = NULL,
+              updated_at = NOW()
+             WHERE storage_account_id = $1
+               AND user_id = $2
+               AND id = ANY($3)`,
+            [accountId, userId, rootIdsArray]
+          );
+        }
         await query(
           `UPDATE virtual_folders SET
-            is_trashed = TRUE,
-            trashed_at = NOW(),
+            is_trashed = FALSE,
+            trashed_at = NULL,
             updated_at = NOW()
            WHERE storage_account_id = $1
              AND user_id = $2
-             AND is_trashed = FALSE
-             AND updated_at < $3`,
-          [accountId, userId, syncStartTime.toISOString()]
+             AND (
+               provider_folder_id = 'root'
+               OR LOWER(TRIM(name)) = 'my drive'
+               OR (parent_id IS NULL AND LOWER(TRIM(name)) = 'root')
+             )`,
+          [accountId, userId]
         );
 
         // Mark initial sync complete in account metadata
@@ -1366,7 +1523,9 @@ export class SyncService {
            AND user_id = $2
            AND parent_id = $3
            AND is_trashed = FALSE
-           AND updated_at < $4`,
+           AND updated_at < $4
+           AND (provider_folder_id IS NULL OR provider_folder_id != 'root')
+           AND LOWER(TRIM(name)) != 'my drive'`,
         [accountId, userId, virtualFolderId, folderSyncStartTime.toISOString()]
       );
     }
