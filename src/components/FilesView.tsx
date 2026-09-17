@@ -47,6 +47,7 @@ import { VirtualFile, VirtualFolder, ViewMode } from '../types/filesystem';
 import { StorageAccount } from '../types/account';
 import { cn, formatBytes, formatDate, normalizeFolderId } from '../lib/formatters';
 import { authFetch, parseApiResponse } from '../lib/api';
+import { UNICLOUD_BUILD_ID } from '../lib/version';
 import { useToast } from './Toast';
 import { FilePreviewModal } from './FilePreviewModal';
 import { MoveCopyModal } from './MoveCopyModal';
@@ -327,12 +328,31 @@ export const FilesView: React.FC<FilesViewProps> = ({
     try {
       if (currentFolderId) {
         // Folder-level sync: targeted refresh with ownership & pagination integrity
-        const res = await authFetch(`/api/folders/${currentFolderId}/sync`, { method: 'POST' });
+        const folderRequestId = `foldersync_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        const endpoint = `/api/folders/${currentFolderId}/sync`;
+
+        console.info('[UniCloud Folder Sync Diagnostics]', {
+          buildId: UNICLOUD_BUILD_ID,
+          endpoint,
+          folderId: currentFolderId,
+          requestId: folderRequestId,
+        });
+
+        const res = await authFetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'X-UniCloud-Request-ID': folderRequestId,
+          },
+        });
         const parsed = await parseApiResponse<{ filesCount?: number }>(res);
         if (parsed.ok) {
           success(`Folder synced: ${parsed.data?.filesCount ?? 0} files found`);
         } else {
-          error(parsed.error?.message || `Failed to synchronize folder (HTTP ${parsed.status})`);
+          error(
+            `[Build:${UNICLOUD_BUILD_ID}, Req:${folderRequestId}] ${
+              parsed.error?.message || `Failed to synchronize folder (HTTP ${parsed.status})`
+            }`
+          );
         }
         if (onRefreshStoragePool) {
           await onRefreshStoragePool();
@@ -354,12 +374,37 @@ export const FilesView: React.FC<FilesViewProps> = ({
         const failedReasons: string[] = [];
 
         for (const account of activeAccounts) {
+          const requestId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+          const endpoint = `/api/accounts/${account.id}/sync`;
+          const mode = 'full';
+
+          // Temporary diagnostic logging immediately before authFetch() in root Sync handler
+          console.info('[UniCloud Root Sync Diagnostics]', {
+            endpoint,
+            accountId: account.id,
+            requestId,
+            mode,
+            buildId: UNICLOUD_BUILD_ID,
+          });
+
           try {
-            const res = await authFetch(`/api/accounts/${account.id}/sync`, {
+            const res = await authFetch(endpoint, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ mode: 'full' }),
+              headers: {
+                'Content-Type': 'application/json',
+                'X-UniCloud-Request-ID': requestId,
+              },
+              body: JSON.stringify({ mode }),
             });
+
+            console.info('[UniCloud Root Sync Response]', {
+              requestId,
+              status: res.status,
+              statusText: res.statusText,
+              contentType: res.headers.get('content-type'),
+              buildId: UNICLOUD_BUILD_ID,
+            });
+
             const parsed = await parseApiResponse<{
               syncResult?: {
                 filesDiscovered?: number;
@@ -377,12 +422,13 @@ export const FilesView: React.FC<FilesViewProps> = ({
             } else {
               failCount++;
               const accLabel = account.displayName || account.email || account.id;
-              failedReasons.push(`${accLabel}: ${parsed.error?.message || `HTTP ${parsed.status}`}`);
+              const errMsg = parsed.error?.message || `HTTP ${parsed.status}`;
+              failedReasons.push(`${accLabel} [Build:${UNICLOUD_BUILD_ID}, Req:${requestId}]: ${errMsg}`);
             }
           } catch (accountErr: any) {
             failCount++;
             const accLabel = account.displayName || account.email || account.id;
-            failedReasons.push(`${accLabel}: ${accountErr.message || 'Network error'}`);
+            failedReasons.push(`${accLabel} [Build:${UNICLOUD_BUILD_ID}, Req:${requestId}]: ${accountErr.message || 'Network error'}`);
           }
         }
 
@@ -406,8 +452,11 @@ export const FilesView: React.FC<FilesViewProps> = ({
         await fetchFilesystemData(null);
       }
     } catch (err: any) {
-      console.error('Failed to sync view', err);
-      error(err.message || 'Error syncing view');
+      console.error('Failed to sync view', {
+        buildId: UNICLOUD_BUILD_ID,
+        error: err?.message,
+      });
+      error(`[Build:${UNICLOUD_BUILD_ID}] Error syncing view: ${err.message || 'Error syncing view'}`);
     } finally {
       setIsSyncingCurrentView(false);
     }

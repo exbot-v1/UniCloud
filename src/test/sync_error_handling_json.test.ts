@@ -466,4 +466,60 @@ describe('Sync API Error Handling & JSON Delivery', () => {
     assert.ok(parsedHtml.error?.message.includes('502'));
     assert.ok(!parsedHtml.error?.message.includes('<!DOCTYPE html>')); // Stripped HTML tags
   });
+
+  test('9. GET /api/debug/version returns valid JSON with build metadata and no secrets', async () => {
+    const { req, res } = createMockHttp({
+      method: 'GET',
+      url: '/api/debug/version',
+    });
+
+    await new Promise<void>((resolve) => {
+      const origJson = res.json.bind(res);
+      res.json = (body: any) => {
+        origJson(body);
+        resolve();
+      };
+      app(req, res);
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.getHeader('content-type')?.includes('application/json'));
+    assert.equal(typeof res.body, 'object');
+    assert.equal(res.body.success, true);
+    assert.ok(typeof res.body.data.buildId === 'string' && res.body.data.buildId.length > 0);
+    assert.ok(typeof res.body.data.apiVersion === 'string' && res.body.data.apiVersion.length > 0);
+    assert.ok(typeof res.body.data.serverTimestamp === 'string');
+    // Ensure no secrets are leaked
+    const rawBody = JSON.stringify(res.body).toLowerCase();
+    assert.ok(!rawBody.includes('password'));
+    assert.ok(!rawBody.includes('secret'));
+    assert.ok(!rawBody.includes('token'));
+    assert.ok(!rawBody.includes('cookie'));
+  });
+
+  test('10. POST /api/accounts/:id/sync propagates X-UniCloud-Request-ID and Build-ID headers', async () => {
+    const customReqId = 'diag_sync_test_req_12345';
+    const { req, res } = createMockHttp({
+      method: 'POST',
+      url: `/api/accounts/${testAccount.id}/sync`,
+      headers: {
+        cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
+        'x-unicloud-request-id': customReqId,
+      },
+      body: { mode: 'full' },
+    });
+
+    await new Promise<void>((resolve) => {
+      const origJson = res.json.bind(res);
+      res.json = (body: any) => {
+        origJson(body);
+        resolve();
+      };
+      app(req, res);
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.getHeader('x-unicloud-request-id'), customReqId);
+    assert.ok(typeof res.getHeader('x-unicloud-build-id') === 'string');
+  });
 });

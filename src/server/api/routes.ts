@@ -26,6 +26,7 @@ import { ProviderRegistry } from '../providers/ProviderRegistry.js';
 import { GoogleDriveProvider } from '../providers/GoogleDriveProvider.js';
 import { searchService } from '../services/SearchService.js';
 import { logger } from '../utils/logger.js';
+import { UNICLOUD_BUILD_ID, UNICLOUD_API_VERSION, UNICLOUD_BUILD_TIMESTAMP } from '../../lib/version.js';
 
 export const apiRouter = Router();
 
@@ -84,6 +85,38 @@ apiRouter.get('/health', async (_req: Request, res: Response) => {
   } catch (err) {
     sendApiError(res, err);
   }
+});
+
+/**
+ * GET /api/debug/version
+ * Lightweight diagnostic endpoint returning build metadata and server status.
+ * Exposes zero secrets, tokens, or credentials.
+ */
+apiRouter.get('/debug/version', (_req: Request, res: Response) => {
+  const response: ApiResponse<{
+    buildId: string;
+    apiVersion: string;
+    serverTimestamp: string;
+    buildTimestamp: string;
+    runtime: string;
+    environment: string;
+  }> = {
+    success: true,
+    data: {
+      buildId: UNICLOUD_BUILD_ID,
+      apiVersion: UNICLOUD_API_VERSION,
+      serverTimestamp: new Date().toISOString(),
+      buildTimestamp: UNICLOUD_BUILD_TIMESTAMP,
+      runtime: process.env.VERCEL ? 'vercel-serverless' : 'node-container',
+      environment: process.env.NODE_ENV || 'development',
+    },
+    meta: {
+      timestamp: new Date().toISOString(),
+      version: UNICLOUD_API_VERSION,
+    },
+  };
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.json(response);
 });
 
 /**
@@ -572,90 +605,134 @@ apiRouter.get('/auth/google/callback', (req: Request, res: Response) => {
  * Triggers metadata and quota refresh for an individual connected Google Drive account.
  * Supports mode: 'delta' | 'full'. Defaults to delta sync when change token is established.
  */
-apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Response) => {
-  const startTime = Date.now();
-  const accountId = req.params.id?.trim();
-  const userId = req.user?.id;
-  const mode = req.body?.mode || req.query?.mode || 'auto';
+apiRouter.post(
+  '/accounts/:id/sync',
+  (req: Request, res: Response, next: any) => {
+    const requestId =
+      (req.headers['x-unicloud-request-id'] as string) ||
+      (req.query?.requestId as string) ||
+      'none';
+    const accountId = req.params.id?.trim();
+    const method = req.method;
+    const path = req.originalUrl || req.url;
 
-  try {
-    if (!accountId) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, 'Account ID is required for synchronization.', 400);
-    }
-    if (!userId) {
-      throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
-    }
-
-    logger.info('Account synchronization requested', {
+    logger.info('[Sync Ingress Start]', {
+      requestId,
+      method,
+      path,
       accountId,
-      userId,
-      mode,
+      hasSessionCookie: Boolean(req.cookies?.[SESSION_COOKIE_NAME]),
+      hasAuthHeader: Boolean(req.headers.authorization),
     });
 
-    let syncResult;
+    res.on('finish', () => {
+      logger.info('[Sync Ingress Finish]', {
+        requestId,
+        method,
+        path,
+        accountId,
+        statusCode: res.statusCode,
+      });
+    });
 
-    if (mode === 'full') {
-      syncResult = await syncService.syncAccount(userId, accountId);
-    } else if (mode === 'delta') {
-      syncResult = await syncService.syncDelta(userId, accountId);
-    } else {
-      // Default: if verified complete initial sync AND change token exists, run incremental delta sync; otherwise run full sync
-      const isInitComplete = await syncService.isInitialSyncComplete(userId, accountId);
-      const token = await accountService.getChangeToken(userId, accountId);
-      if (token && isInitComplete) {
+    next();
+  },
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const startTime = Date.now();
+    const requestId =
+      (req.headers['x-unicloud-request-id'] as string) ||
+      (req.query?.requestId as string) ||
+      'none';
+    const accountId = req.params.id?.trim();
+    const userId = req.user?.id;
+    const mode = req.body?.mode || req.query?.mode || 'auto';
+
+    res.setHeader('X-UniCloud-Request-ID', requestId);
+    res.setHeader('X-UniCloud-Build-ID', UNICLOUD_BUILD_ID);
+
+    try {
+      if (!accountId) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, 'Account ID is required for synchronization.', 400);
+      }
+      if (!userId) {
+        throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+      }
+
+      logger.info('Account synchronization requested', {
+        requestId,
+        accountId,
+        userId,
+        mode,
+      });
+
+      let syncResult;
+
+      if (mode === 'full') {
+        syncResult = await syncService.syncAccount(userId, accountId);
+      } else if (mode === 'delta') {
         syncResult = await syncService.syncDelta(userId, accountId);
       } else {
-        syncResult = await syncService.syncAccount(userId, accountId);
+        // Default: if verified complete initial sync AND change token exists, run incremental delta sync; otherwise run full sync
+        const isInitComplete = await syncService.isInitialSyncComplete(userId, accountId);
+        const token = await accountService.getChangeToken(userId, accountId);
+        if (token && isInitComplete) {
+          syncResult = await syncService.syncDelta(userId, accountId);
+        } else {
+          syncResult = await syncService.syncAccount(userId, accountId);
+        }
       }
+
+      const updatedAccount = await accountService.getAccountById(userId, accountId);
+      const pool = await storageService.getStoragePoolForUser(userId);
+      const durationMs = Date.now() - startTime;
+
+      logger.info('Account synchronization completed successfully', {
+        requestId,
+        accountId,
+        userId,
+        mode,
+        durationMs,
+        filesDiscovered: syncResult?.filesDiscovered,
+        filesAdded: syncResult?.filesAdded,
+        filesUpdated: syncResult?.filesUpdated,
+        filesRemoved: syncResult?.filesRemoved,
+      });
+
+      const response: ApiResponse<{
+        syncResult: typeof syncResult;
+        account: typeof updatedAccount;
+        pool: typeof pool;
+      }> = {
+        success: true,
+        data: {
+          syncResult,
+          account: updatedAccount,
+          pool,
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          version: UNICLOUD_API_VERSION,
+        },
+      };
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.json(response);
+    } catch (err: any) {
+      const durationMs = Date.now() - startTime;
+      logger.error('Account synchronization failed', {
+        requestId,
+        accountId,
+        userId,
+        mode,
+        durationMs,
+        error: err.message,
+        errorCode: err instanceof AppError ? err.errorCode : (err.code || 'UNKNOWN_ERROR'),
+        statusCode: err instanceof AppError ? err.statusCode : (err.statusCode || 500),
+      });
+      sendApiError(res, err);
     }
-
-    const updatedAccount = await accountService.getAccountById(userId, accountId);
-    const pool = await storageService.getStoragePoolForUser(userId);
-    const durationMs = Date.now() - startTime;
-
-    logger.info('Account synchronization completed successfully', {
-      accountId,
-      userId,
-      mode,
-      durationMs,
-      filesDiscovered: syncResult?.filesDiscovered,
-      filesAdded: syncResult?.filesAdded,
-      filesUpdated: syncResult?.filesUpdated,
-      filesRemoved: syncResult?.filesRemoved,
-    });
-
-    const response: ApiResponse<{
-      syncResult: typeof syncResult;
-      account: typeof updatedAccount;
-      pool: typeof pool;
-    }> = {
-      success: true,
-      data: {
-        syncResult,
-        account: updatedAccount,
-        pool,
-      },
-      meta: {
-        timestamp: new Date().toISOString(),
-        version: '1.3.0-phase3',
-      },
-    };
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.json(response);
-  } catch (err: any) {
-    const durationMs = Date.now() - startTime;
-    logger.error('Account synchronization failed', {
-      accountId,
-      userId,
-      mode,
-      durationMs,
-      error: err.message,
-      errorCode: err instanceof AppError ? err.errorCode : (err.code || 'UNKNOWN_ERROR'),
-      statusCode: err instanceof AppError ? err.statusCode : (err.statusCode || 500),
-    });
-    sendApiError(res, err);
   }
-});
+);
 
 /**
  * POST /api/accounts/:id/sync/delta

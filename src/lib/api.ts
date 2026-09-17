@@ -55,27 +55,20 @@ export interface SafeApiResponse<T = any> {
  * Preserves the actual HTTP status code and meaningful error message.
  */
 export async function parseApiResponse<T = any>(res: Response): Promise<SafeApiResponse<T>> {
-  const contentType = res.headers.get('content-type') || '';
   let json: any = null;
   let rawText = '';
 
-  if (contentType.includes('application/json')) {
-    try {
-      json = await res.json();
-    } catch {
-      json = null;
-    }
-  } else {
-    try {
-      rawText = await res.text();
+  try {
+    rawText = await res.text();
+    if (rawText && rawText.trim()) {
       try {
         json = JSON.parse(rawText);
       } catch {
         json = null;
       }
-    } catch {
-      rawText = '';
     }
+  } catch {
+    rawText = '';
   }
 
   if (json && typeof json === 'object') {

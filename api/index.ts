@@ -106,11 +106,24 @@ export async function initializeServerlessInstance(): Promise<void> {
  * Standard Vercel Serverless Function Handler
  */
 export default async function handler(req: Request, res: Response): Promise<void> {
+  const reqId = (req.headers?.['x-unicloud-request-id'] as string) || 'none';
+  if (reqId !== 'none' && typeof res.setHeader === 'function') {
+    try {
+      res.setHeader('X-UniCloud-Request-ID', reqId);
+    } catch {
+      // ignore
+    }
+  }
+
   try {
     await initializeServerlessInstance();
   } catch (err: any) {
-    // Fail-closed security boundary: never continue to Express if security validation fails.
-    // sendApiError sanitizes credentials, passwords, tokens, and suppresses production stack traces.
+    logger.error('Vercel serverless initialization error', {
+      requestId: reqId,
+      url: req.url,
+      method: req.method,
+      error: err?.message,
+    });
     sendApiError(res, err);
     return;
   }
