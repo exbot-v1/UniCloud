@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { SearchResult, SearchResultItem, VirtualFile } from '../types/filesystem';
 import { cn, formatBytes, formatDate } from '../lib/formatters';
-import { authFetch } from '../lib/api';
+import { authFetch, parseApiResponse } from '../lib/api';
 
 export interface GlobalSearchProps {
   searchQuery: string;
@@ -92,13 +92,13 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({
     try {
       const url = `/api/search?query=${encodeURIComponent(searchQuery.trim())}${mimeParam}&sortBy=${sortBy}&limit=25`;
       const res = await authFetch(url);
-      const json = await res.json();
+      const parsed = await parseApiResponse<SearchResult>(res);
 
-      if (!res.ok || !json.success) {
-        throw new Error(json.error?.message || 'Search failed');
+      if (!parsed.ok || !parsed.data) {
+        throw new Error(parsed.error?.message || 'Search failed');
       }
 
-      const searchData: SearchResult = json.data;
+      const searchData: SearchResult = parsed.data;
       setResults(searchData.items || []);
       setTotalCount(searchData.totalCount ?? searchData.total ?? searchData.items?.length ?? 0);
       setSelectedIndex(-1);

@@ -29,7 +29,7 @@ import {
 import { StoragePoolSummary, StorageAccount } from '../types/account';
 import { UploadRoutingStrategy, UploadRoutingDecision, UploadJob, UploadStatus } from '../types/upload';
 import { formatBytes, normalizeFolderId } from '../lib/formatters';
-import { authFetch } from '../lib/api';
+import { authFetch, parseApiResponse } from '../lib/api';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -138,12 +138,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         signal: abortControllerRef.current.signal,
       });
 
-      const initData = await initRes.json();
-      if (!initData.success || !initData.data) {
-        throw new Error(initData.error?.message || 'Failed to initiate upload session.');
+      const initParsed = await parseApiResponse<UploadJob>(initRes);
+      if (!initParsed.ok || !initParsed.data) {
+        throw new Error(initParsed.error?.message || 'Failed to initiate upload session.');
       }
 
-      const job: UploadJob = initData.data;
+      const job: UploadJob = initParsed.data;
       setCurrentJob(job);
 
       const matchedAccount = poolSummary.accounts.find((a) => a.id === job.assignedAccountId);
@@ -177,9 +177,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           signal: abortControllerRef.current.signal,
         });
 
-        const chunkData = await chunkRes.json();
-        if (!chunkData.success) {
-          throw new Error(chunkData.error?.message || `Chunk upload failed at byte offset ${offset}`);
+        const chunkParsed = await parseApiResponse<{ completed?: boolean }>(chunkRes);
+        if (!chunkParsed.ok) {
+          throw new Error(chunkParsed.error?.message || `Chunk upload failed at byte offset ${offset}`);
         }
 
         offset = chunkEnd;
@@ -187,7 +187,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         const percent = Math.min(100, Math.round((offset / total) * 100));
         setUploadProgress(percent);
 
-        if (chunkData.data?.completed) {
+        if (chunkParsed.data?.completed) {
           break;
         }
       }
@@ -240,12 +240,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       const retryRes = await authFetch(`/api/upload/${currentJob.id}/retry`, {
         method: 'POST',
       });
-      const retryData = await retryRes.json();
-      if (!retryData.success) {
-        throw new Error(retryData.error?.message || 'Failed to resume upload session.');
+      const retryParsed = await parseApiResponse<UploadJob>(retryRes);
+      if (!retryParsed.ok || !retryParsed.data) {
+        throw new Error(retryParsed.error?.message || 'Failed to resume upload session.');
       }
 
-      const resumedJob: UploadJob = retryData.data;
+      const resumedJob: UploadJob = retryParsed.data;
       setCurrentJob(resumedJob);
 
       let offset = resumedJob.bytesUploaded || 0;
@@ -273,16 +273,16 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           signal: abortControllerRef.current.signal,
         });
 
-        const chunkData = await chunkRes.json();
-        if (!chunkData.success) {
-          throw new Error(chunkData.error?.message || 'Chunk upload failed during resume.');
+        const chunkParsed = await parseApiResponse<{ completed?: boolean }>(chunkRes);
+        if (!chunkParsed.ok) {
+          throw new Error(chunkParsed.error?.message || 'Chunk upload failed during resume.');
         }
 
         offset = chunkEnd;
         setBytesUploaded(offset);
         setUploadProgress(Math.min(100, Math.round((offset / total) * 100)));
 
-        if (chunkData.data?.completed) {
+        if (chunkParsed.data?.completed) {
           break;
         }
       }
@@ -329,9 +329,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           preferredAccountId: simPreferredAccountId || undefined,
         }),
       });
-      const data = await res.json();
-      if (data.success && data.data) {
-        setSimRoutingResult(data.data);
+      const parsed = await parseApiResponse<UploadRoutingDecision>(res);
+      if (parsed.ok && parsed.data) {
+        setSimRoutingResult(parsed.data);
       } else {
         const capable = poolSummary.accounts
           .filter((a) => a.quota.freeBytes >= simSizeBytes)

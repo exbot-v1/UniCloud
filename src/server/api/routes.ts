@@ -573,17 +573,25 @@ apiRouter.get('/auth/google/callback', (req: Request, res: Response) => {
  * Supports mode: 'delta' | 'full'. Defaults to delta sync when change token is established.
  */
 apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Response) => {
+  const startTime = Date.now();
+  const accountId = req.params.id?.trim();
+  const userId = req.user?.id;
+  const mode = req.body?.mode || req.query?.mode || 'auto';
+
   try {
-    const accountId = req.params.id?.trim();
     if (!accountId) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, 'Account ID is required for synchronization.', 400);
     }
-    const userId = req.user?.id;
     if (!userId) {
       throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
     }
 
-    const mode = req.body?.mode || req.query?.mode;
+    logger.info('Account synchronization requested', {
+      accountId,
+      userId,
+      mode,
+    });
+
     let syncResult;
 
     if (mode === 'full') {
@@ -603,6 +611,18 @@ apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Resp
 
     const updatedAccount = await accountService.getAccountById(userId, accountId);
     const pool = await storageService.getStoragePoolForUser(userId);
+    const durationMs = Date.now() - startTime;
+
+    logger.info('Account synchronization completed successfully', {
+      accountId,
+      userId,
+      mode,
+      durationMs,
+      filesDiscovered: syncResult?.filesDiscovered,
+      filesAdded: syncResult?.filesAdded,
+      filesUpdated: syncResult?.filesUpdated,
+      filesRemoved: syncResult?.filesRemoved,
+    });
 
     const response: ApiResponse<{
       syncResult: typeof syncResult;
@@ -622,7 +642,17 @@ apiRouter.post('/accounts/:id/sync', requireAuth, async (req: Request, res: Resp
     };
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json(response);
-  } catch (err) {
+  } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    logger.error('Account synchronization failed', {
+      accountId,
+      userId,
+      mode,
+      durationMs,
+      error: err.message,
+      errorCode: err instanceof AppError ? err.errorCode : (err.code || 'UNKNOWN_ERROR'),
+      statusCode: err instanceof AppError ? err.statusCode : (err.statusCode || 500),
+    });
     sendApiError(res, err);
   }
 });

@@ -12,6 +12,7 @@
 import React, { useState, useRef } from 'react';
 import { X, Lock, Mail, User, ArrowRight, ShieldCheck, AlertCircle, Loader2 } from 'lucide-react';
 import { UserPublicProfile } from '../types/auth';
+import { parseApiResponse } from '../lib/api';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -58,13 +59,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      const parsed = await parseApiResponse<{ user: UserPublicProfile }>(res);
 
-      if (!res.ok || !data.success) {
-        throw new Error(data.error?.message || 'Authentication failed. Please check your credentials.');
+      if (!parsed.ok || !parsed.data?.user) {
+        throw new Error(parsed.error?.message || 'Authentication failed. Please check your credentials.');
       }
 
-      onAuthSuccess(data.data.user);
+      onAuthSuccess(parsed.data.user);
       onClose();
     } catch (err: any) {
       setError(err.message || 'An error occurred during authentication.');
@@ -93,10 +94,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         body: JSON.stringify({ email: testEmail, password: testPassword }),
       });
 
-      let data = await res.json();
+      let parsed = await parseApiResponse<{ user: UserPublicProfile }>(res);
 
       // If user doesn't exist yet, register them automatically
-      if (!res.ok) {
+      if (!parsed.ok) {
         res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -107,14 +108,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             displayName: 'socialdoodle7',
           }),
         });
-        data = await res.json();
+        parsed = await parseApiResponse<{ user: UserPublicProfile }>(res);
       }
 
-      if (!res.ok || !data.success) {
-        throw new Error(data.error?.message || 'Demo authentication failed.');
+      if (!parsed.ok || !parsed.data?.user) {
+        throw new Error(parsed.error?.message || 'Demo authentication failed.');
       }
 
-      onAuthSuccess(data.data.user);
+      onAuthSuccess(parsed.data.user);
       onClose();
     } catch (err: any) {
       setError(err.message || 'An error occurred during demo login.');

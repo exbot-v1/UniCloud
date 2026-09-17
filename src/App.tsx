@@ -17,7 +17,7 @@ import { UploadModal } from './components/UploadModal';
 import { AddAccountModal } from './components/AddAccountModal';
 import { AuthModal } from './components/AuthModal';
 import { calculateStoragePoolMetrics } from './lib/storageMetrics';
-import { authFetch, clearSessionToken } from './lib/api';
+import { authFetch, clearSessionToken, parseApiResponse } from './lib/api';
 import { StorageAccount, StoragePoolSummary } from './types/account';
 import { UserPublicProfile } from './types/auth';
 import { VirtualFile, VirtualFolder } from './types/filesystem';
@@ -49,13 +49,11 @@ export default function App() {
     setLoadingAuth(true);
     try {
       const res = await authFetch('/api/auth/me');
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success && json.data) {
-          setUser(json.data);
-          loadUserData();
-          return;
-        }
+      const parsed = await parseApiResponse<{ user: UserPublicProfile }>(res);
+      if (parsed.ok && parsed.data?.user) {
+        setUser(parsed.data.user);
+        loadUserData();
+        return;
       }
       setUser(null);
     } catch {
@@ -73,30 +71,25 @@ export default function App() {
         authFetch('/api/files?folderId=all'),
       ]);
 
-      if (accRes.ok) {
-        const accJson = await accRes.json();
-        if (accJson.success) {
-          setRealAccounts(accJson.data);
-        }
+      const [accParsed, poolParsed, filesParsed] = await Promise.all([
+        parseApiResponse<StorageAccount[]>(accRes),
+        parseApiResponse<StoragePoolSummary>(poolRes),
+        parseApiResponse<{ files: VirtualFile[] }>(filesRes),
+      ]);
+
+      if (accParsed.ok && accParsed.data) {
+        setRealAccounts(accParsed.data);
       }
 
-      if (poolRes.ok) {
-        const poolJson = await poolRes.json();
-        if (poolJson.success) {
-          setRealPoolSummary(poolJson.data);
-        }
+      if (poolParsed.ok && poolParsed.data) {
+        setRealPoolSummary(poolParsed.data);
       }
 
-      if (filesRes.ok) {
-        const filesJson = await filesRes.json();
-        if (filesJson.success && filesJson.data?.files) {
-          const sorted = [...filesJson.data.files].sort(
-            (a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
-          );
-          setRealRecentFiles(sorted.slice(0, 10));
-        } else {
-          setRealRecentFiles([]);
-        }
+      if (filesParsed.ok && filesParsed.data?.files) {
+        const sorted = [...filesParsed.data.files].sort(
+          (a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
+        );
+        setRealRecentFiles(sorted.slice(0, 10));
       } else {
         setRealRecentFiles([]);
       }

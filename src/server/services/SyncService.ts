@@ -418,6 +418,7 @@ export class SyncService {
             name = EXCLUDED.name,
             is_starred = EXCLUDED.is_starred,
             is_trashed = EXCLUDED.is_trashed,
+            trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_folders.trashed_at END,
             updated_at = NOW()
           RETURNING id`,
           [
@@ -596,6 +597,7 @@ export class SyncService {
                 name = EXCLUDED.name,
                 is_starred = EXCLUDED.is_starred,
                 is_trashed = EXCLUDED.is_trashed,
+                trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_folders.trashed_at END,
                 updated_at = NOW()
               RETURNING id`,
               [
@@ -642,6 +644,7 @@ export class SyncService {
                 web_url = EXCLUDED.web_url,
                 is_starred = EXCLUDED.is_starred,
                 is_trashed = EXCLUDED.is_trashed,
+                trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_files.trashed_at END,
                 provider_modified_at = EXCLUDED.provider_modified_at,
                 synced_at = NOW(),
                 updated_at = NOW()`,
@@ -714,6 +717,7 @@ export class SyncService {
             web_url = EXCLUDED.web_url,
             is_starred = EXCLUDED.is_starred,
             is_trashed = EXCLUDED.is_trashed,
+            trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_files.trashed_at END,
             provider_modified_at = EXCLUDED.provider_modified_at,
             synced_at = NOW(),
             updated_at = NOW()`,
@@ -1097,6 +1101,7 @@ export class SyncService {
               name = EXCLUDED.name,
               is_starred = EXCLUDED.is_starred,
               is_trashed = EXCLUDED.is_trashed,
+              trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_folders.trashed_at END,
               updated_at = NOW()
             RETURNING id`,
             [
@@ -1443,6 +1448,7 @@ export class SyncService {
             name = EXCLUDED.name,
             is_starred = EXCLUDED.is_starred,
             is_trashed = EXCLUDED.is_trashed,
+            trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_folders.trashed_at END,
             updated_at = NOW()`,
           [
             crypto.randomUUID(),
@@ -1475,6 +1481,7 @@ export class SyncService {
             web_url = EXCLUDED.web_url,
             is_starred = EXCLUDED.is_starred,
             is_trashed = EXCLUDED.is_trashed,
+            trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_files.trashed_at END,
             provider_modified_at = EXCLUDED.provider_modified_at,
             synced_at = NOW(),
             updated_at = NOW()`,

@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { UserPublicProfile } from '../types/auth';
 import { StorageAccount } from '../types/account';
+import { parseApiResponse } from '../lib/api';
 
 interface AddAccountModalProps {
   isOpen: boolean;
@@ -60,12 +61,10 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
     setErrorMessage(null);
     try {
       const res = await fetch('/api/accounts/google/config');
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success && json.data) {
-          setConfig(json.data);
-          return;
-        }
+      const parsed = await parseApiResponse<OAuthConfig>(res);
+      if (parsed.ok && parsed.data) {
+        setConfig(parsed.data);
+        return;
       }
       setConfig({
         isConfigured: false,

@@ -21,7 +21,7 @@ import {
 import { VirtualFile, VirtualFolder } from '../types/filesystem';
 import { StorageAccount } from '../types/account';
 import { cn, formatBytes } from '../lib/formatters';
-import { authFetch } from '../lib/api';
+import { authFetch, parseApiResponse } from '../lib/api';
 
 export interface MoveCopyModalProps {
   isOpen: boolean;
@@ -60,10 +60,10 @@ export const MoveCopyModal: React.FC<MoveCopyModalProps> = ({
     // Fetch all virtual folders
     setIsLoadingFolders(true);
     authFetch('/api/files?folderId=all')
-      .then((res) => res.json())
-      .then((json) => {
-        if (json.success && json.data?.folders) {
-          setFolders(json.data.folders.filter((f: VirtualFolder) => !f.isTrashed));
+      .then((res) => parseApiResponse<{ folders?: VirtualFolder[] }>(res))
+      .then((parsed) => {
+        if (parsed.ok && parsed.data?.folders) {
+          setFolders(parsed.data.folders.filter((f: VirtualFolder) => !f.isTrashed));
         }
       })
       .catch((err) => {
@@ -98,9 +98,9 @@ export const MoveCopyModal: React.FC<MoveCopyModalProps> = ({
           }),
         });
 
-        const json = await res.json();
-        if (!res.ok || !json.success) {
-          throw new Error(json.error?.message || 'Failed to move file');
+        const parsed = await parseApiResponse(res);
+        if (!parsed.ok) {
+          throw new Error(parsed.error?.message || 'Failed to move file');
         }
       } else {
         // Mode === 'copy'
@@ -114,9 +114,9 @@ export const MoveCopyModal: React.FC<MoveCopyModalProps> = ({
           }),
         });
 
-        const json = await res.json();
-        if (!res.ok || !json.success) {
-          throw new Error(json.error?.message || 'Failed to copy file');
+        const parsed = await parseApiResponse(res);
+        if (!parsed.ok) {
+          throw new Error(parsed.error?.message || 'Failed to copy file');
         }
       }
 

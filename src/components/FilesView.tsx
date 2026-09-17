@@ -287,18 +287,10 @@ export const FilesView: React.FC<FilesViewProps> = ({
       }
 
       const res = await authFetch(url);
-      if (!res.ok) {
-        if (res.status === 401) {
-          setErrorMessage('Please sign in to access your files.');
-          return;
-        }
-        throw new Error(`Failed to load filesystem (status: ${res.status})`);
-      }
-
-      const json = await res.json();
-      if (json.success && json.data) {
-        let loadedFiles: VirtualFile[] = json.data.files || [];
-        let loadedFolders: VirtualFolder[] = json.data.folders || [];
+      const parsed = await parseApiResponse<{ files: VirtualFile[]; folders: VirtualFolder[] }>(res);
+      if (parsed.ok && parsed.data) {
+        let loadedFiles: VirtualFile[] = parsed.data.files || [];
+        let loadedFolders: VirtualFolder[] = parsed.data.folders || [];
 
         if (activeView === 'recent') {
           loadedFiles = [...loadedFiles].sort(
@@ -309,7 +301,11 @@ export const FilesView: React.FC<FilesViewProps> = ({
         setRealFiles(loadedFiles);
         setRealFolders(loadedFolders);
       } else {
-        throw new Error(json.error?.message || 'Invalid server response');
+        if (parsed.status === 401) {
+          setErrorMessage('Please sign in to access your files.');
+          return;
+        }
+        throw new Error(parsed.error?.message || `Failed to load filesystem (HTTP ${parsed.status})`);
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'An error occurred while loading files.');
@@ -323,28 +319,94 @@ export const FilesView: React.FC<FilesViewProps> = ({
     fetchFilesystemData(currentFolderId);
   }, [fetchFilesystemData, currentFolderId]);
 
-  // Handle on-demand folder synchronization with Google Drive
+  // Handle on-demand folder or full root synchronization with Google Drive
   const [isSyncingCurrentView, setIsSyncingCurrentView] = useState(false);
   const handleSyncCurrentView = async () => {
     if (isSyncingCurrentView) return;
     setIsSyncingCurrentView(true);
     try {
       if (currentFolderId) {
+        // Folder-level sync: targeted refresh with ownership & pagination integrity
         const res = await authFetch(`/api/folders/${currentFolderId}/sync`, { method: 'POST' });
-        const parsed = await parseApiResponse(res);
+        const parsed = await parseApiResponse<{ filesCount?: number }>(res);
         if (parsed.ok) {
           success(`Folder synced: ${parsed.data?.filesCount ?? 0} files found`);
         } else {
-          error(parsed.error?.message || `Failed to synchronize folder (HTTP ${res.status})`);
+          error(parsed.error?.message || `Failed to synchronize folder (HTTP ${parsed.status})`);
         }
-      } else {
         if (onRefreshStoragePool) {
           await onRefreshStoragePool();
         }
+        await fetchFilesystemData(currentFolderId);
+      } else {
+        // Root view: Synchronize every connected storage account safely and sequentially with mode="full"
+        const activeAccounts = accounts.filter((a) => a.isEnabled !== false);
+        if (activeAccounts.length === 0) {
+          info('No connected storage accounts to synchronize.');
+          return;
+        }
+
+        info(`Synchronizing ${activeAccounts.length} storage account${activeAccounts.length > 1 ? 's' : ''}...`);
+
+        let successCount = 0;
+        let failCount = 0;
+        let totalDiscovered = 0;
+        const failedReasons: string[] = [];
+
+        for (const account of activeAccounts) {
+          try {
+            const res = await authFetch(`/api/accounts/${account.id}/sync`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mode: 'full' }),
+            });
+            const parsed = await parseApiResponse<{
+              syncResult?: {
+                filesDiscovered?: number;
+                filesAdded?: number;
+                filesUpdated?: number;
+                filesRemoved?: number;
+              };
+            }>(res);
+
+            if (parsed.ok) {
+              successCount++;
+              if (parsed.data?.syncResult) {
+                totalDiscovered += parsed.data.syncResult.filesDiscovered ?? 0;
+              }
+            } else {
+              failCount++;
+              const accLabel = account.displayName || account.email || account.id;
+              failedReasons.push(`${accLabel}: ${parsed.error?.message || `HTTP ${parsed.status}`}`);
+            }
+          } catch (accountErr: any) {
+            failCount++;
+            const accLabel = account.displayName || account.email || account.id;
+            failedReasons.push(`${accLabel}: ${accountErr.message || 'Network error'}`);
+          }
+        }
+
+        // Aggregate progress & result reporting
+        if (failCount === 0) {
+          success(
+            `Synchronized ${successCount} account${successCount > 1 ? 's' : ''} successfully (${totalDiscovered} items discovered).`
+          );
+        } else if (successCount > 0) {
+          error(
+            `Sync completed with errors: ${failCount} of ${activeAccounts.length} failed. (${failedReasons.join('; ')})`
+          );
+        } else {
+          error(`Failed to synchronize accounts: ${failedReasons.join('; ')}`);
+        }
+
+        // Only refresh storage pool and filesystem data after synchronization finishes
+        if (onRefreshStoragePool) {
+          await onRefreshStoragePool();
+        }
+        await fetchFilesystemData(null);
       }
-      await fetchFilesystemData(currentFolderId);
     } catch (err: any) {
-      console.error('Failed to sync folder view', err);
+      console.error('Failed to sync view', err);
       error(err.message || 'Error syncing view');
     } finally {
       setIsSyncingCurrentView(false);
@@ -554,21 +616,19 @@ export const FilesView: React.FC<FilesViewProps> = ({
     if (e) e.stopPropagation();
     try {
       const res = await authFetch(`/api/files/${file.id}/star`, { method: 'PATCH' });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success) {
-          const updatedStarred = json.data.isStarred;
-          setRealFiles((prev) =>
-            prev.map((f) => (f.id === file.id ? { ...f, isStarred: updatedStarred } : f))
-          );
-          if (selectedFile?.id === file.id) {
-            setSelectedFile((prev) => (prev ? { ...prev, isStarred: updatedStarred } : null));
-          }
-          if (activeView === 'starred' && !updatedStarred) {
-            setRealFiles((prev) => prev.filter((f) => f.id !== file.id));
-          }
-          success(updatedStarred ? `Added "${file.name}" to starred.` : `Removed "${file.name}" from starred.`);
+      const parsed = await parseApiResponse<{ isStarred: boolean }>(res);
+      if (parsed.ok && parsed.data) {
+        const updatedStarred = parsed.data.isStarred;
+        setRealFiles((prev) =>
+          prev.map((f) => (f.id === file.id ? { ...f, isStarred: updatedStarred } : f))
+        );
+        if (selectedFile?.id === file.id) {
+          setSelectedFile((prev) => (prev ? { ...prev, isStarred: updatedStarred } : null));
         }
+        if (activeView === 'starred' && !updatedStarred) {
+          setRealFiles((prev) => prev.filter((f) => f.id !== file.id));
+        }
+        success(updatedStarred ? `Added "${file.name}" to starred.` : `Removed "${file.name}" from starred.`);
       }
     } catch (err) {
       console.error('Failed to toggle star', err);
@@ -709,7 +769,8 @@ export const FilesView: React.FC<FilesViewProps> = ({
         : `/api/files/${item.id}?permanent=true`;
 
       const res = await authFetch(endpoint, { method: 'DELETE' });
-      if (res.ok) {
+      const parsed = await parseApiResponse(res);
+      if (parsed.ok) {
         if (isFolder) {
           setRealFolders((prev) => prev.filter((f) => f.id !== item.id));
           if (selectedFolder?.id === item.id) setSelectedFolder(null);
@@ -721,8 +782,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
         success(`Permanently deleted "${item.name}".`);
         setDeleteConfirmTarget(null);
       } else {
-        const json = await res.json().catch(() => ({}));
-        error(json.error?.message || `Failed to delete "${item.name}".`);
+        error(parsed.error?.message || `Failed to delete "${item.name}".`);
       }
     } catch (err: any) {
       error(err.message || 'Error executing permanent deletion.');
@@ -788,26 +848,27 @@ export const FilesView: React.FC<FilesViewProps> = ({
         body: JSON.stringify({ name: renameValue.trim() }),
       });
 
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success && json.data) {
-          if (renamingItem.isFolder) {
-            setRealFolders((prev) =>
-              prev.map((f) => (f.id === renamingItem.id ? json.data : f))
-            );
-          } else {
-            setRealFiles((prev) =>
-              prev.map((f) => (f.id === renamingItem.id ? json.data : f))
-            );
-            if (selectedFile?.id === renamingItem.id) {
-              setSelectedFile(json.data);
-            }
+      const parsed = await parseApiResponse<any>(res);
+      if (parsed.ok && parsed.data) {
+        if (renamingItem.isFolder) {
+          setRealFolders((prev) =>
+            prev.map((f) => (f.id === renamingItem.id ? parsed.data : f))
+          );
+        } else {
+          setRealFiles((prev) =>
+            prev.map((f) => (f.id === renamingItem.id ? parsed.data : f))
+          );
+          if (selectedFile?.id === renamingItem.id) {
+            setSelectedFile(parsed.data);
           }
-          success(`Renamed to "${renameValue.trim()}".`);
         }
+        success(`Renamed to "${renameValue.trim()}".`);
+      } else {
+        error(parsed.error?.message || 'Failed to rename item');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to rename item', err);
+      error(err.message || 'Error renaming item');
     } finally {
       setIsRenamingSubmitting(false);
       setRenamingItem(null);
@@ -836,15 +897,15 @@ export const FilesView: React.FC<FilesViewProps> = ({
         }),
       });
 
-      const json = await res.json().catch(() => ({}));
-      if (res.ok && json.success && json.data) {
-        setRealFolders((prev) => [...prev, json.data]);
+      const parsed = await parseApiResponse<VirtualFolder>(res);
+      if (parsed.ok && parsed.data) {
+        setRealFolders((prev) => [...prev, parsed.data!]);
         setNewFolderName('');
         setIsCreatingFolder(false);
         success(`Created folder "${newFolderName.trim()}".`);
         fetchFilesystemData(cleanParentId);
       } else {
-        error(json.error?.message || `Failed to create folder (${res.status})`);
+        error(parsed.error?.message || `Failed to create folder (${parsed.status})`);
       }
     } catch (err: any) {
       console.error('Failed to create folder', err);
