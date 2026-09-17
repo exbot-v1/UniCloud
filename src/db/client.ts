@@ -355,6 +355,26 @@ export async function ensureSchema(): Promise<void> {
 
       CREATE INDEX IF NOT EXISTS idx_upload_jobs_user_status ON upload_jobs(user_id, status);
 
+      CREATE TABLE IF NOT EXISTS sync_jobs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        storage_account_id UUID NOT NULL REFERENCES storage_accounts(id) ON DELETE CASCADE,
+        mode VARCHAR(50) NOT NULL DEFAULT 'full',
+        status VARCHAR(50) NOT NULL DEFAULT 'queued',
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        error_message TEXT,
+        progress JSONB NOT NULL DEFAULT '{"filesDiscovered":0,"filesAdded":0,"filesUpdated":0,"filesRemoved":0}'::jsonb,
+        result JSONB,
+        client_request_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sync_jobs_account_status ON sync_jobs(storage_account_id, status);
+      CREATE INDEX IF NOT EXISTS idx_sync_jobs_user_status ON sync_jobs(user_id, status);
+      CREATE INDEX IF NOT EXISTS idx_sync_jobs_created_at ON sync_jobs(created_at DESC);
+
       -- Migration: Ensure drive_change_token exists for Delta Sync (Phase 3)
       ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS drive_change_token TEXT;
     `);
@@ -390,6 +410,7 @@ interface MemoryDb {
   oauthStates: Map<string, any>;
   syncHistory: Map<string, any>;
   uploadJobs: Map<string, any>;
+  syncJobs: Map<string, any>;
 }
 
 if (!globalObj.__unicloud_memory_db) {
@@ -402,6 +423,7 @@ if (!globalObj.__unicloud_memory_db) {
     oauthStates: new Map(),
     syncHistory: new Map(),
     uploadJobs: new Map(),
+    syncJobs: new Map(),
   };
 }
 
@@ -1908,6 +1930,160 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       return { rows: [job as any], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
+  }
+
+  // 9. Sync Jobs (Async sync job workflow)
+  if (/INSERT INTO sync_jobs/i.test(normalizedSql)) {
+    let clientRequestId = null;
+    let parsedProgress = { filesDiscovered: 0, filesAdded: 0, filesUpdated: 0, filesRemoved: 0 };
+    let createdAt = new Date().toISOString();
+    let updatedAt = new Date().toISOString();
+
+    if (/client_request_id/i.test(normalizedSql)) {
+      clientRequestId = params[5] || null;
+      const rawProgress = params[6];
+      if (typeof rawProgress === 'string') {
+        try { parsedProgress = JSON.parse(rawProgress); } catch { /* ignore */ }
+      } else if (rawProgress && typeof rawProgress === 'object') {
+        parsedProgress = rawProgress;
+      }
+      if (params[7]) createdAt = params[7];
+      if (params[8]) updatedAt = params[8];
+    } else {
+      // (id, user_id, storage_account_id, mode, status, created_at, updated_at)
+      if (params[5]) createdAt = params[5];
+      if (params[6]) updatedAt = params[6];
+    }
+
+    const jobRecord = {
+      id: params[0],
+      user_id: params[1],
+      storage_account_id: params[2],
+      mode: params[3] || 'full',
+      status: params[4] || 'queued',
+      client_request_id: clientRequestId,
+      progress: parsedProgress,
+      result: null,
+      error_message: null,
+      started_at: null,
+      completed_at: null,
+      created_at: createdAt,
+      updated_at: updatedAt,
+    };
+    memoryDb.syncJobs.set(jobRecord.id, jobRecord);
+    return { rows: [jobRecord as any], rowCount: 1 };
+  }
+
+  if (/SELECT .* FROM sync_jobs/i.test(normalizedSql)) {
+    let list = Array.from(memoryDb.syncJobs.values());
+
+    // By ID and user_id: WHERE id = $1 AND user_id = $2
+    if (/WHERE\s+id\s*=\s*\$1\s+AND\s+user_id\s*=\s*\$2/i.test(normalizedSql)) {
+      const id = params[0];
+      const userId = params[1];
+      const job = memoryDb.syncJobs.get(id);
+      if (job && job.user_id === userId) {
+        return { rows: [job as any], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    // By ID alone: WHERE id = $1
+    if (/WHERE\s+id\s*=\s*\$1/i.test(normalizedSql)) {
+      const id = params[0];
+      const job = memoryDb.syncJobs.get(id);
+      return { rows: job ? [job as any] : [], rowCount: job ? 1 : 0 };
+    }
+
+    // Active jobs: WHERE user_id = $1 AND storage_account_id = $2 AND status IN
+    if (/user_id\s*=\s*\$1\s+AND\s+storage_account_id\s*=\s*\$2/i.test(normalizedSql) ||
+        /storage_account_id\s*=\s*\$2\s+AND\s+user_id\s*=\s*\$1/i.test(normalizedSql)) {
+      const userId = params[0];
+      const accountId = params[1];
+      list = list.filter(j => j.user_id === userId && j.storage_account_id === accountId);
+      if (/status\s+IN/i.test(normalizedSql)) {
+        list = list.filter(j => ['queued', 'running'].includes(j.status));
+      }
+    } else if (/storage_account_id\s*=\s*\$1/i.test(normalizedSql)) {
+      list = list.filter(j => j.storage_account_id === params[0]);
+    } else if (/user_id\s*=\s*\$1/i.test(normalizedSql)) {
+      list = list.filter(j => j.user_id === params[0]);
+    }
+
+    if (/ORDER BY .* DESC/i.test(normalizedSql)) {
+      list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    }
+
+    if (/LIMIT 1/i.test(normalizedSql)) {
+      return { rows: list.slice(0, 1) as any[], rowCount: Math.min(list.length, 1) };
+    }
+
+    return { rows: list as any[], rowCount: list.length };
+  }
+
+  if (/UPDATE sync_jobs SET/i.test(normalizedSql)) {
+    // Check if it's stale job cleanup: WHERE status = 'running' AND updated_at < $1
+    if (/WHERE\s+status\s*=\s*.*running.*\s+AND\s+updated_at\s*</i.test(normalizedSql)) {
+      const cutoff = new Date(params[0]).getTime();
+      let updatedCount = 0;
+      for (const j of memoryDb.syncJobs.values()) {
+        if (j.status === 'running' && new Date(j.updated_at).getTime() < cutoff) {
+          j.status = 'failed';
+          j.error_message = 'Sync job timed out or serverless instance terminated';
+          j.completed_at = new Date().toISOString();
+          j.updated_at = new Date().toISOString();
+          updatedCount++;
+        }
+      }
+      return { rows: [], rowCount: updatedCount };
+    }
+
+    // Standard update by ID: WHERE id = $X
+    const jobId = params[params.length - 1];
+    const job = memoryDb.syncJobs.get(jobId);
+    if (job) {
+      job.updated_at = new Date().toISOString();
+      if (/status\s*=\s*\$1/i.test(normalizedSql)) {
+        job.status = params[0];
+      }
+      if (/started_at\s*=\s*\$2/i.test(normalizedSql) && params[1]) {
+        job.started_at = params[1];
+      }
+      if (/completed_at\s*=\s*\$3/i.test(normalizedSql) && params[2]) {
+        job.completed_at = params[2];
+      }
+      if (/error_message\s*=\s*\$4/i.test(normalizedSql)) {
+        job.error_message = params[3] || null;
+      }
+      if (/progress\s*=\s*\$5/i.test(normalizedSql) && params[4]) {
+        let p = params[4];
+        if (typeof p === 'string') {
+          try { p = JSON.parse(p); } catch { /* ignore */ }
+        }
+        job.progress = p;
+      }
+      if (/result\s*=\s*\$6/i.test(normalizedSql) && params[5]) {
+        let r = params[5];
+        if (typeof r === 'string') {
+          try { r = JSON.parse(r); } catch { /* ignore */ }
+        }
+        job.result = r;
+      }
+      return { rows: [job as any], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+
+  if (/DELETE FROM sync_jobs WHERE storage_account_id =/i.test(normalizedSql)) {
+    const accountId = params[0];
+    let count = 0;
+    for (const [id, j] of memoryDb.syncJobs.entries()) {
+      if (j.storage_account_id === accountId) {
+        memoryDb.syncJobs.delete(id);
+        count++;
+      }
+    }
+    return { rows: [], rowCount: count };
   }
 
   // Fallback generic empty

@@ -320,6 +320,94 @@ export const FilesView: React.FC<FilesViewProps> = ({
     fetchFilesystemData(currentFolderId);
   }, [fetchFilesystemData, currentFolderId]);
 
+  // Poll an asynchronous sync job until terminal state
+  const pollSyncJob = async (
+    jobId: string,
+    accountLabel: string,
+    initialRequestId: string,
+    onProgress?: (progressText: string) => void
+  ): Promise<{ ok: boolean; result?: any; progress?: any; error?: string; requestId: string }> => {
+    const maxPolls = 180; // Up to 6 minutes (180 * 2000ms)
+    const pollIntervalMs = 2000;
+    let lastRequestId = initialRequestId;
+
+    for (let i = 0; i < maxPolls; i++) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+      lastRequestId = `poll_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      try {
+        const pollRes = await authFetch(`/api/sync/jobs/${jobId}`, {
+          method: 'GET',
+          headers: {
+            'X-UniCloud-Request-ID': lastRequestId,
+          },
+        });
+
+        const parsed = await parseApiResponse<{
+          jobId: string;
+          status: string;
+          progress?: {
+            filesDiscovered?: number;
+            filesAdded?: number;
+            filesUpdated?: number;
+            filesRemoved?: number;
+            message?: string;
+          };
+          result?: any;
+          error?: string;
+        }>(pollRes);
+
+        if (!parsed.ok) {
+          return {
+            ok: false,
+            error: parsed.error?.message || `HTTP ${parsed.status}`,
+            requestId: lastRequestId,
+          };
+        }
+
+        const jobData = parsed.data;
+        if (!jobData) {
+          continue;
+        }
+
+        if (jobData.status === 'completed') {
+          return {
+            ok: true,
+            result: jobData.result,
+            progress: jobData.progress,
+            requestId: lastRequestId,
+          };
+        }
+
+        if (jobData.status === 'failed') {
+          return {
+            ok: false,
+            error: jobData.error || 'Synchronization job failed',
+            progress: jobData.progress,
+            requestId: lastRequestId,
+          };
+        }
+
+        // Job is still queued or running
+        if (onProgress && jobData.progress) {
+          const filesCount = jobData.progress.filesDiscovered ?? 0;
+          const msg =
+            jobData.progress.message ||
+            (filesCount > 0 ? `${filesCount} files discovered...` : `${jobData.status}...`);
+          onProgress(msg);
+        }
+      } catch (pollErr: any) {
+        console.warn(`[Sync Poll Warning] Account ${accountLabel}, Job ${jobId}:`, pollErr?.message);
+      }
+    }
+
+    return {
+      ok: false,
+      error: 'Synchronization job timed out after 6 minutes.',
+      requestId: lastRequestId,
+    };
+  };
+
   // Handle on-demand folder or full root synchronization with Google Drive
   const [isSyncingCurrentView, setIsSyncingCurrentView] = useState(false);
   const handleSyncCurrentView = async () => {
@@ -359,14 +447,14 @@ export const FilesView: React.FC<FilesViewProps> = ({
         }
         await fetchFilesystemData(currentFolderId);
       } else {
-        // Root view: Synchronize every connected storage account safely and sequentially with mode="full"
+        // Root view: Synchronize every connected storage account asynchronously with pollable jobs
         const activeAccounts = accounts.filter((a) => a.isEnabled !== false);
         if (activeAccounts.length === 0) {
           info('No connected storage accounts to synchronize.');
           return;
         }
 
-        info(`Synchronizing ${activeAccounts.length} storage account${activeAccounts.length > 1 ? 's' : ''}...`);
+        info(`Starting synchronization for ${activeAccounts.length} storage account${activeAccounts.length > 1 ? 's' : ''}...`);
 
         let successCount = 0;
         let failCount = 0;
@@ -374,11 +462,12 @@ export const FilesView: React.FC<FilesViewProps> = ({
         const failedReasons: string[] = [];
 
         for (const account of activeAccounts) {
+          const accLabel = account.displayName || account.email || account.id;
           const requestId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
           const endpoint = `/api/accounts/${account.id}/sync`;
           const mode = 'full';
 
-          // Temporary diagnostic logging immediately before authFetch() in root Sync handler
+          // Diagnostic logging immediately before authFetch() in root Sync handler
           console.info('[UniCloud Root Sync Diagnostics]', {
             endpoint,
             accountId: account.id,
@@ -387,6 +476,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
             buildId: UNICLOUD_BUILD_ID,
           });
 
+          let jobId: string | null = null;
           try {
             const res = await authFetch(endpoint, {
               method: 'POST',
@@ -406,29 +496,50 @@ export const FilesView: React.FC<FilesViewProps> = ({
             });
 
             const parsed = await parseApiResponse<{
-              syncResult?: {
-                filesDiscovered?: number;
-                filesAdded?: number;
-                filesUpdated?: number;
-                filesRemoved?: number;
-              };
+              jobId: string;
+              status: string;
+              job?: any;
             }>(res);
 
-            if (parsed.ok) {
-              successCount++;
-              if (parsed.data?.syncResult) {
-                totalDiscovered += parsed.data.syncResult.filesDiscovered ?? 0;
-              }
-            } else {
+            if (!parsed.ok || !parsed.data?.jobId) {
               failCount++;
-              const accLabel = account.displayName || account.email || account.id;
               const errMsg = parsed.error?.message || `HTTP ${parsed.status}`;
               failedReasons.push(`${accLabel} [Build:${UNICLOUD_BUILD_ID}, Req:${requestId}]: ${errMsg}`);
+              continue;
             }
+
+            jobId = parsed.data.jobId;
+            info(`Syncing ${accLabel} (Job started)...`);
           } catch (accountErr: any) {
             failCount++;
-            const accLabel = account.displayName || account.email || account.id;
-            failedReasons.push(`${accLabel} [Build:${UNICLOUD_BUILD_ID}, Req:${requestId}]: ${accountErr.message || 'Network error'}`);
+            failedReasons.push(
+              `${accLabel} [Build:${UNICLOUD_BUILD_ID}, Req:${requestId}]: ${accountErr.message || 'Network error'}`
+            );
+            continue;
+          }
+
+          // Poll job until completed or failed
+          if (jobId) {
+            const pollOutcome = await pollSyncJob(jobId, accLabel, requestId, (progressMsg) => {
+              info(`Syncing ${accLabel}: ${progressMsg}`);
+            });
+
+            if (pollOutcome.ok) {
+              successCount++;
+              const filesDisc =
+                pollOutcome.progress?.filesDiscovered ??
+                pollOutcome.result?.filesDiscovered ??
+                0;
+              totalDiscovered += filesDisc;
+              info(`Completed sync for ${accLabel} (${filesDisc} items discovered).`);
+            } else {
+              failCount++;
+              failedReasons.push(
+                `${accLabel} [Build:${UNICLOUD_BUILD_ID}, Req:${pollOutcome.requestId}]: ${
+                  pollOutcome.error || 'Job failed'
+                }`
+              );
+            }
           }
         }
 
@@ -445,7 +556,7 @@ export const FilesView: React.FC<FilesViewProps> = ({
           error(`Failed to synchronize accounts: ${failedReasons.join('; ')}`);
         }
 
-        // Only refresh storage pool and filesystem data after synchronization finishes
+        // Only refresh storage pool and filesystem data after all synchronization jobs finish
         if (onRefreshStoragePool) {
           await onRefreshStoragePool();
         }

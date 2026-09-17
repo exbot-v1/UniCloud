@@ -21,6 +21,7 @@ import { ensureSchema, query } from '../db/client.js';
 import { UserService } from '../server/services/UserService.js';
 import { accountService } from '../server/services/AccountService.js';
 import { syncService } from '../server/services/SyncService.js';
+import { syncJobService } from '../server/services/SyncJobService.js';
 import { ProviderRegistry } from '../server/providers/ProviderRegistry.js';
 import { GoogleDriveProvider } from '../server/providers/GoogleDriveProvider.js';
 import { SESSION_COOKIE_NAME } from '../server/api/middleware/auth.js';
@@ -240,11 +241,11 @@ describe('Sync API Error Handling & JSON Delivery', () => {
       app(req, res);
     });
 
-    assert.equal(res.statusCode, 200);
+    assert.ok(res.statusCode === 200 || res.statusCode === 202);
     assert.ok(res.getHeader('content-type')?.includes('application/json'));
     assert.equal(typeof res.body, 'object');
     assert.equal(res.body.success, true);
-    assert.ok(res.body.data.syncResult);
+    assert.ok(res.body.data.syncResult || res.body.data.jobId);
     assert.ok(res.body.meta?.timestamp);
   });
 
@@ -303,7 +304,7 @@ describe('Sync API Error Handling & JSON Delivery', () => {
     assert.ok(res.body.error.message.includes('disabled'));
   });
 
-  test('4. Sync with expired token preserves HTTP 401 and valid JSON', async () => {
+  test('4. Sync with expired token dispatches job and records failure with valid JSON', async () => {
     mockProvider.refreshHandler = async () => {
       throw new AppError(
         ErrorCode.TOKEN_EXPIRED,
@@ -329,15 +330,40 @@ describe('Sync API Error Handling & JSON Delivery', () => {
       app(req, res);
     });
 
-    assert.equal(res.statusCode, 401);
+    assert.equal(res.statusCode, 202);
     assert.ok(res.getHeader('content-type')?.includes('application/json'));
     assert.equal(typeof res.body, 'object');
-    assert.equal(res.body.success, false);
-    assert.equal(res.body.error.code, ErrorCode.TOKEN_EXPIRED);
-    assert.ok(res.body.error.message.includes('expired'));
+    assert.equal(res.body.success, true);
+    assert.ok(res.body.data.jobId);
+
+    // Await background job execution to settle
+    await syncJobService.triggerJob(res.body.data.jobId);
+
+    // Verify GET /api/sync/jobs/:jobId records the failure
+    const { req: jobReq, res: jobRes } = createMockHttp({
+      method: 'GET',
+      url: `/api/sync/jobs/${res.body.data.jobId}`,
+      headers: {
+        cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
+      },
+    });
+
+    await new Promise<void>((resolve) => {
+      const origJson = jobRes.json.bind(jobRes);
+      jobRes.json = (body: any) => {
+        origJson(body);
+        resolve();
+      };
+      app(jobReq, jobRes);
+    });
+
+    assert.equal(jobRes.statusCode, 200);
+    assert.ok(jobRes.getHeader('content-type')?.includes('application/json'));
+    assert.equal(jobRes.body.data.status, 'failed');
+    assert.ok(jobRes.body.data.error.includes('expired'));
   });
 
-  test('5. Sync with upstream provider network error preserves HTTP 502 and valid JSON', async () => {
+  test('5. Sync with upstream provider network error dispatches job and records failure with valid JSON', async () => {
     mockProvider.quotaHandler = async () => {
       throw new AppError(
         ErrorCode.PROVIDER_ERROR,
@@ -363,15 +389,39 @@ describe('Sync API Error Handling & JSON Delivery', () => {
       app(req, res);
     });
 
-    assert.equal(res.statusCode, 502);
+    assert.equal(res.statusCode, 202);
     assert.ok(res.getHeader('content-type')?.includes('application/json'));
     assert.equal(typeof res.body, 'object');
-    assert.equal(res.body.success, false);
-    assert.equal(res.body.error.code, ErrorCode.PROVIDER_ERROR);
-    assert.ok(res.body.error.message.includes('ETIMEDOUT') || res.body.error.message.includes('Google Drive'));
+    assert.equal(res.body.success, true);
+    assert.ok(res.body.data.jobId);
+
+    // Await background job execution to settle
+    await syncJobService.triggerJob(res.body.data.jobId);
+
+    const { req: jobReq, res: jobRes } = createMockHttp({
+      method: 'GET',
+      url: `/api/sync/jobs/${res.body.data.jobId}`,
+      headers: {
+        cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
+      },
+    });
+
+    await new Promise<void>((resolve) => {
+      const origJson = jobRes.json.bind(jobRes);
+      jobRes.json = (body: any) => {
+        origJson(body);
+        resolve();
+      };
+      app(jobReq, jobRes);
+    });
+
+    assert.equal(jobRes.statusCode, 200);
+    assert.ok(jobRes.getHeader('content-type')?.includes('application/json'));
+    assert.equal(jobRes.body.data.status, 'failed');
+    assert.ok(jobRes.body.data.error.includes('ETIMEDOUT') || jobRes.body.data.error.includes('Google Drive'));
   });
 
-  test('6. Sync with unexpected non-AppError preserves HTTP status or 500 and returns valid JSON', async () => {
+  test('6. Sync with unexpected non-AppError dispatches job and records error safely with valid JSON', async () => {
     mockProvider.refreshHandler = async () => {
       const customErr = new Error('Unexpected network socket hang up');
       (customErr as any).status = 503;
@@ -395,15 +445,38 @@ describe('Sync API Error Handling & JSON Delivery', () => {
       app(req, res);
     });
 
-    assert.equal(res.statusCode, 503);
+    assert.equal(res.statusCode, 202);
     assert.ok(res.getHeader('content-type')?.includes('application/json'));
     assert.equal(typeof res.body, 'object');
-    assert.equal(res.body.success, false);
-    assert.equal(res.body.error.code, ErrorCode.SERVICE_UNAVAILABLE);
-    assert.ok(res.body.error.message.includes('Unexpected network socket hang up'));
+    assert.equal(res.body.success, true);
+    assert.ok(res.body.data.jobId);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const { req: jobReq, res: jobRes } = createMockHttp({
+      method: 'GET',
+      url: `/api/sync/jobs/${res.body.data.jobId}`,
+      headers: {
+        cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
+      },
+    });
+
+    await new Promise<void>((resolve) => {
+      const origJson = jobRes.json.bind(jobRes);
+      jobRes.json = (body: any) => {
+        origJson(body);
+        resolve();
+      };
+      app(jobReq, jobRes);
+    });
+
+    assert.equal(jobRes.statusCode, 200);
+    assert.ok(jobRes.getHeader('content-type')?.includes('application/json'));
+    assert.equal(jobRes.body.data.status, 'failed');
+    assert.ok(jobRes.body.data.error.includes('Unexpected network socket hang up'));
   });
 
-  test('7. Vercel serverless handler (api/index.ts) awaits response and returns valid JSON on sync failure', async () => {
+  test('7. Vercel serverless handler (api/index.ts) awaits response and returns valid JSON on sync dispatch', async () => {
     mockProvider.refreshHandler = async () => {
       throw new AppError(ErrorCode.TOKEN_EXPIRED, 'Serverless sync token expired', 401);
     };
@@ -419,11 +492,11 @@ describe('Sync API Error Handling & JSON Delivery', () => {
     // Invoke handler and await its Promise directly
     await handler(req, res);
 
-    assert.equal(res.statusCode, 401);
+    assert.equal(res.statusCode, 202);
     assert.ok(res.getHeader('content-type')?.includes('application/json'));
     assert.equal(typeof res.body, 'object');
-    assert.equal(res.body.success, false);
-    assert.equal(res.body.error.code, ErrorCode.TOKEN_EXPIRED);
+    assert.equal(res.body.success, true);
+    assert.ok(res.body.data.jobId);
   });
 
   test('8. Client parseApiResponse parses JSON and non-JSON (plain-text/HTML) safely', async () => {
@@ -518,7 +591,7 @@ describe('Sync API Error Handling & JSON Delivery', () => {
       app(req, res);
     });
 
-    assert.equal(res.statusCode, 200);
+    assert.ok(res.statusCode === 200 || res.statusCode === 202);
     assert.equal(res.getHeader('x-unicloud-request-id'), customReqId);
     assert.ok(typeof res.getHeader('x-unicloud-build-id') === 'string');
   });

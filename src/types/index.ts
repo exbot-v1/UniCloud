@@ -10,3 +10,4 @@ export * from './account.js';
 export * from './filesystem.js';
 export * from './provider.js';
 export * from './upload.js';
+export * from './sync.js';

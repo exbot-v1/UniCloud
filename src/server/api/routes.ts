@@ -25,6 +25,8 @@ import { syncService } from '../services/SyncService.js';
 import { ProviderRegistry } from '../providers/ProviderRegistry.js';
 import { GoogleDriveProvider } from '../providers/GoogleDriveProvider.js';
 import { searchService } from '../services/SearchService.js';
+import { syncJobService } from '../services/SyncJobService.js';
+import { SyncJobMode } from '../../types/sync.js';
 import { logger } from '../utils/logger.js';
 import { UNICLOUD_BUILD_ID, UNICLOUD_API_VERSION, UNICLOUD_BUILD_TIMESTAMP } from '../../lib/version.js';
 
@@ -659,67 +661,42 @@ apiRouter.post(
         throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
       }
 
-      logger.info('Account synchronization requested', {
+      logger.info('Account synchronization job requested', {
         requestId,
         accountId,
         userId,
         mode,
       });
 
-      let syncResult;
-
-      if (mode === 'full') {
-        syncResult = await syncService.syncAccount(userId, accountId);
-      } else if (mode === 'delta') {
-        syncResult = await syncService.syncDelta(userId, accountId);
-      } else {
-        // Default: if verified complete initial sync AND change token exists, run incremental delta sync; otherwise run full sync
-        const isInitComplete = await syncService.isInitialSyncComplete(userId, accountId);
-        const token = await accountService.getChangeToken(userId, accountId);
-        if (token && isInitComplete) {
-          syncResult = await syncService.syncDelta(userId, accountId);
-        } else {
-          syncResult = await syncService.syncAccount(userId, accountId);
-        }
-      }
-
-      const updatedAccount = await accountService.getAccountById(userId, accountId);
-      const pool = await storageService.getStoragePoolForUser(userId);
-      const durationMs = Date.now() - startTime;
-
-      logger.info('Account synchronization completed successfully', {
-        requestId,
-        accountId,
+      const { jobId, status, job, isNew } = await syncJobService.createOrGetActiveJob(
         userId,
-        mode,
-        durationMs,
-        filesDiscovered: syncResult?.filesDiscovered,
-        filesAdded: syncResult?.filesAdded,
-        filesUpdated: syncResult?.filesUpdated,
-        filesRemoved: syncResult?.filesRemoved,
-      });
+        accountId,
+        mode as SyncJobMode,
+        requestId
+      );
 
-      const response: ApiResponse<{
-        syncResult: typeof syncResult;
-        account: typeof updatedAccount;
-        pool: typeof pool;
-      }> = {
+      // Trigger asynchronous execution safely without blocking HTTP response
+      const reqWaitUntil = (req as any).waitUntil || (res as any).waitUntil;
+      syncJobService.triggerJob(jobId, reqWaitUntil);
+
+      res.status(202);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.json({
         success: true,
         data: {
-          syncResult,
-          account: updatedAccount,
-          pool,
+          jobId,
+          status,
+          job,
+          isNew,
         },
         meta: {
           timestamp: new Date().toISOString(),
           version: UNICLOUD_API_VERSION,
         },
-      };
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.json(response);
+      });
     } catch (err: any) {
       const durationMs = Date.now() - startTime;
-      logger.error('Account synchronization failed', {
+      logger.error('Account synchronization job dispatch failed', {
         requestId,
         accountId,
         userId,
@@ -733,6 +710,68 @@ apiRouter.post(
     }
   }
 );
+
+/**
+ * GET /api/sync/jobs/:jobId
+ * Retrieves the status, progress, and results of an asynchronous synchronization job.
+ */
+apiRouter.get('/sync/jobs/:jobId', requireAuth, async (req: Request, res: Response) => {
+  const requestId =
+    (req.headers['x-unicloud-request-id'] as string) ||
+    (req.query?.requestId as string) ||
+    'none';
+  const jobId = req.params.jobId?.trim();
+  const userId = req.user?.id;
+
+  res.setHeader('X-UniCloud-Request-ID', requestId);
+  res.setHeader('X-UniCloud-Build-ID', UNICLOUD_BUILD_ID);
+
+  try {
+    if (!jobId) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'Job ID is required for status check.', 400);
+    }
+    if (!userId) {
+      throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+    }
+
+    const job = await syncJobService.getJobById(userId, jobId);
+    if (!job) {
+      throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, `Sync job ${jobId} not found.`, 404);
+    }
+
+    // Drive job forward if queued or unmonitored in current container
+    if (
+      job.status === 'queued' ||
+      (job.status === 'running' && !syncJobService.isJobActivelyRunningInMemory(job.id))
+    ) {
+      const reqWaitUntil = (req as any).waitUntil || (res as any).waitUntil;
+      syncJobService.triggerJob(job.id, reqWaitUntil);
+    }
+
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.json({
+      success: true,
+      data: {
+        jobId: job.id,
+        status: job.status,
+        progress: job.progress,
+        result: job.result,
+        error: job.errorMessage,
+        mode: job.mode,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: UNICLOUD_API_VERSION,
+      },
+    });
+  } catch (err: any) {
+    sendApiError(res, err);
+  }
+});
 
 /**
  * POST /api/accounts/:id/sync/delta
