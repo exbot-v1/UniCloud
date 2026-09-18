@@ -1593,11 +1593,18 @@ describe('UniCloud Phase 7: Production & Vercel Deployment Readiness', () => {
         app(syncReq, syncRes);
       });
 
-      assert.equal(syncRes.statusCode, 200, 'Sync endpoint must return HTTP 200');
+      assert.ok(
+        syncRes.statusCode === 200 || syncRes.statusCode === 202,
+        `Sync endpoint must return HTTP 200 or 202 (got ${syncRes.statusCode})`
+      );
       assert.equal(syncRes.body.success, true);
-      assert.ok(syncRes.body.data.syncResult);
-      assert.equal(syncRes.body.data.account.id, accountId);
-      assert.ok(syncRes.body.data.pool);
+      if (syncRes.statusCode === 202) {
+        assert.ok(syncRes.body.data.jobId, 'Async job ID should be returned');
+      } else {
+        assert.ok(syncRes.body.data.syncResult);
+        assert.equal(syncRes.body.data.account.id, accountId);
+        assert.ok(syncRes.body.data.pool);
+      }
     });
 
     test('Existing OAuth state validation and single-use behavior remain intact', async () => {

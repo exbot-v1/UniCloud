@@ -130,6 +130,23 @@ export interface DbOAuthState {
   created_at: string;
 }
 
+export interface DbSyncJob {
+  id: string;
+  user_id: string;
+  storage_account_id: string;
+  mode: string;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  progress: any;
+  result: any;
+  client_request_id: string | null;
+  continuation_state: any;
+  created_at: string;
+  updated_at: string;
+}
+
 export const TableNames = {
   USERS: 'users',
   USER_SESSIONS: 'user_sessions',
@@ -139,4 +156,5 @@ export const TableNames = {
   UPLOAD_JOBS: 'upload_jobs',
   SYNC_HISTORY: 'sync_history',
   OAUTH_STATES: 'oauth_states',
+  SYNC_JOBS: 'sync_jobs',
 } as const;

@@ -19,6 +19,24 @@ import { ProviderRegistry } from '../providers/ProviderRegistry.js';
 import { GoogleDriveProvider, isInvalidPageTokenError } from '../providers/GoogleDriveProvider.js';
 import { ProviderType, AccountStatus } from '../../types/account.js';
 import { ProviderFileListResult } from '../../types/provider.js';
+import {
+  SyncContinuationState,
+  SyncPhase,
+  SyncJobProgress,
+  SyncJobStatus,
+  SyncJobMode,
+  ResumableFolderTarget,
+  DiscoveredFileItem,
+} from '../../types/sync.js';
+
+export interface BoundedStepOutput {
+  state: SyncContinuationState;
+  hasMore: boolean;
+  status: SyncJobStatus;
+  progress: SyncJobProgress;
+  syncResult?: SyncResult;
+  errorMessage?: string | null;
+}
 
 export interface SyncResult {
   accountId: string;
@@ -309,7 +327,7 @@ export class SyncService {
 
     const promise = (async () => {
       try {
-        return await this.executeSyncAccount(userId, accountId);
+        return await this.executeLegacySyncAccount(userId, accountId);
       } finally {
         this.inFlightSyncs.delete(syncKey);
       }
@@ -319,7 +337,890 @@ export class SyncService {
     return promise;
   }
 
+  public async executeBoundedStep(
+    userId: string,
+    accountId: string,
+    existingState: SyncContinuationState | null,
+    mode: SyncJobMode = 'full',
+    options?: {
+      maxFoldersPerStep?: number;
+      maxFilesPerStep?: number;
+    }
+  ): Promise<BoundedStepOutput> {
+    const maxFoldersPerStep = options?.maxFoldersPerStep || 2;
+    const maxFilesPerStep = options?.maxFilesPerStep || 25;
+
+    // 1. Delta mode execution
+    if (mode === 'delta') {
+      const deltaResult = await this.syncDelta(userId, accountId);
+      const now = new Date().toISOString();
+      const finalState: SyncContinuationState = {
+        phase: 'RECONCILE_AND_COMPLETE',
+        syncStartTime: now,
+        stepCount: 1,
+        globalPageToken: null,
+        allQueriesPaginationComplete: deltaResult.paginationComplete,
+        allDiscoveredItemIds: [],
+        folderMap: {},
+        rootVirtualFolderIds: [],
+        rootProviderFolderIds: [],
+        foldersToQuery: [],
+        visitedFolders: [],
+        currentFolderPagination: null,
+        initialFileItems: [],
+        seenFileProviderIds: [],
+        filesDiscovered: deltaResult.filesDiscovered,
+        filesAddedOrUpdated: deltaResult.filesAddedOrUpdated,
+        filesRemoved: deltaResult.filesRemoved || 0,
+        foldersProcessed: deltaResult.foldersProcessed || 0,
+        isEnumerationComplete: true,
+        isReconciliationComplete: true,
+      };
+      return {
+        state: finalState,
+        hasMore: false,
+        status: 'completed',
+        progress: {
+          filesDiscovered: deltaResult.filesDiscovered,
+          filesAdded: deltaResult.filesAddedOrUpdated,
+          filesUpdated: 0,
+          filesRemoved: deltaResult.filesRemoved || 0,
+          phase: 'RECONCILE_AND_COMPLETE',
+          stepCount: 1,
+          hasMore: false,
+        },
+        syncResult: deltaResult,
+      };
+    }
+
+    // 2. Auto mode resolution
+    if (mode === 'auto') {
+      const isComplete = await this.isInitialSyncComplete(userId, accountId);
+      const token = await accountService.getChangeToken(userId, accountId);
+      if (isComplete && token) {
+        return this.executeBoundedStep(userId, accountId, existingState, 'delta', options);
+      }
+      mode = 'full';
+    }
+
+    // 3. Full sync state machine
+    const account = await accountService.getAccountById(userId, accountId);
+    if (account.isEnabled === false) {
+      throw new AppError(ErrorCode.ACCOUNT_DISABLED, 'Account is disabled. Enable it before syncing.', 400);
+    }
+
+    const credentials = await accountService.getDecryptedCredentials(userId, accountId);
+    const provider = ProviderRegistry.get(credentials.provider) as GoogleDriveProvider;
+    const { accessToken } = await provider.refreshAuthentication(credentials.refreshToken);
+
+    let state: SyncContinuationState;
+    if (!existingState) {
+      const quota = await provider.getStorageQuota(accessToken);
+      await accountService.updateQuota(userId, accountId, quota);
+
+      const existingFolderRows = await query<{
+        id: string;
+        provider_folder_id: string | null;
+        parent_id: string | null;
+        name: string;
+        is_trashed: boolean;
+      }>(
+        `SELECT id, provider_folder_id, parent_id, name, is_trashed FROM virtual_folders 
+         WHERE storage_account_id = $1`,
+        [accountId]
+      );
+
+      const rootVirtualFolderIds = new Set<string>();
+      const rootProviderFolderIds = new Set<string>(['root']);
+      const providerMetadata = (account as any)?.providerMetadata || (account as any)?.provider_metadata;
+      if (providerMetadata) {
+        if (providerMetadata.rootFolderId) rootProviderFolderIds.add(providerMetadata.rootFolderId);
+        if (providerMetadata.driveRootId) rootProviderFolderIds.add(providerMetadata.driveRootId);
+        if (providerMetadata.virtualRootFolderId) rootVirtualFolderIds.add(providerMetadata.virtualRootFolderId);
+        if (providerMetadata.rootVirtualFolderId) rootVirtualFolderIds.add(providerMetadata.rootVirtualFolderId);
+      }
+
+      for (const row of existingFolderRows.rows) {
+        if (this.isRootVirtualFolderRecord(row, providerMetadata)) {
+          rootVirtualFolderIds.add(row.id);
+          if (row.provider_folder_id) {
+            rootProviderFolderIds.add(row.provider_folder_id);
+          }
+        }
+      }
+
+      const folderMap = new Map<string, string>();
+      for (const row of existingFolderRows.rows) {
+        if (row.provider_folder_id) {
+          folderMap.set(row.provider_folder_id, row.id);
+        }
+      }
+
+      for (const rootId of rootVirtualFolderIds) {
+        for (const pId of rootProviderFolderIds) {
+          if (!folderMap.has(pId)) {
+            folderMap.set(pId, rootId);
+          }
+        }
+      }
+
+      const rootVirtualFolderId = Array.from(rootVirtualFolderIds)[0] || null;
+      const foldersToQuery: ResumableFolderTarget[] = [
+        { providerFolderId: 'root', virtualFolderId: rootVirtualFolderId },
+      ];
+
+      state = {
+        phase: 'DISCOVER_GLOBAL',
+        syncStartTime: new Date().toISOString(),
+        stepCount: 1,
+        globalPageToken: null,
+        allQueriesPaginationComplete: true,
+        allDiscoveredItemIds: [],
+        folderMap: Object.fromEntries(folderMap),
+        rootVirtualFolderIds: Array.from(rootVirtualFolderIds),
+        rootProviderFolderIds: Array.from(rootProviderFolderIds),
+        foldersToQuery,
+        visitedFolders: [],
+        currentFolderPagination: null,
+        initialFileItems: [],
+        seenFileProviderIds: [],
+        filesDiscovered: 0,
+        filesAddedOrUpdated: 0,
+        filesRemoved: 0,
+        foldersProcessed: 0,
+        isEnumerationComplete: false,
+        isReconciliationComplete: false,
+      };
+    } else {
+      state = JSON.parse(JSON.stringify(existingState));
+    }
+
+    const folderMap = new Map<string, string>(Object.entries(state.folderMap));
+
+    try {
+      // Phase 1: DISCOVER_GLOBAL
+      if (state.phase === 'DISCOVER_GLOBAL') {
+        const listResult = await provider.listFiles(accessToken, {
+          fetchAllPages: false,
+          pageToken: state.globalPageToken || undefined,
+          pageSize: 100,
+          includeShared: false,
+        });
+
+        const ownedFiles = listResult.files.filter(
+          (item) => item.ownedByMe !== false && !item.isShared
+        );
+        const initialFolderItems = ownedFiles.filter(
+          (item) => item.isFolder || item.mimeType === 'application/vnd.google-apps.folder'
+        );
+        const initialFileItems = ownedFiles.filter(
+          (item) => !item.isFolder && item.mimeType !== 'application/vnd.google-apps.folder'
+        );
+
+        for (const item of ownedFiles) {
+          const fid = item.providerFileId || (item as any).id;
+          if (fid && !state.allDiscoveredItemIds.includes(fid)) {
+            state.allDiscoveredItemIds.push(fid);
+          }
+        }
+
+        // Upsert discovered folders
+        for (const folder of initialFolderItems) {
+          const folderFid = folder.providerFileId || (folder as any).id;
+          if (!folderFid) continue;
+          const existingId = folderMap.get(folderFid);
+          const folderId = existingId || crypto.randomUUID();
+
+          const upsertResult = await query<{ id: string }>(
+            `INSERT INTO virtual_folders (
+              id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
+              name, is_starred, is_trashed, created_at, updated_at
+            ) VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (storage_account_id, provider_folder_id) DO UPDATE SET
+              name = EXCLUDED.name,
+              is_starred = EXCLUDED.is_starred,
+              is_trashed = EXCLUDED.is_trashed,
+              trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_folders.trashed_at END,
+              updated_at = NOW()
+            RETURNING id`,
+            [
+              folderId,
+              userId,
+              accountId,
+              ProviderType.GOOGLE_DRIVE,
+              folderFid,
+              folder.name,
+              folder.isStarred ?? (folder as any).starred ?? false,
+              folder.isTrashed ?? (folder as any).trashed ?? false,
+              folder.createdAt ?? (folder as any).createdTime ?? new Date().toISOString(),
+              folder.modifiedAt ?? (folder as any).modifiedTime ?? new Date().toISOString(),
+            ]
+          );
+
+          const authoritativeFolderId = upsertResult.rows[0]?.id || folderId;
+          folderMap.set(folderFid, authoritativeFolderId);
+
+          if (
+            !state.visitedFolders.includes(folderFid) &&
+            !state.foldersToQuery.some((f) => f.providerFolderId === folderFid)
+          ) {
+            state.foldersToQuery.push({
+              providerFolderId: folderFid,
+              virtualFolderId: authoritativeFolderId,
+            });
+          }
+        }
+
+        // Resolve candidate parent IDs for discovered folders
+        for (const folder of initialFolderItems) {
+          const folderFid = folder.providerFileId || (folder as any).id;
+          if (!folderFid) continue;
+          const virtualFolderId = folderMap.get(folderFid)!;
+          const candidateParents = [
+            ...(folder.parentFolderIds || []),
+            folder.parentFolderId,
+          ].filter((p): p is string => Boolean(p));
+
+          let resolvedParentId: string | null = null;
+          for (const p of candidateParents) {
+            resolvedParentId = await this.resolveAuthoritativeParentId(
+              p,
+              folderMap,
+              userId,
+              accountId,
+              provider,
+              accessToken
+            );
+            if (resolvedParentId) break;
+          }
+
+          if (resolvedParentId === virtualFolderId) {
+            resolvedParentId = null;
+          }
+
+          if (resolvedParentId) {
+            await query(
+              `UPDATE virtual_folders SET
+                parent_id = $1,
+                updated_at = NOW()
+               WHERE id = $2 AND user_id = $3`,
+              [resolvedParentId, virtualFolderId, userId]
+            );
+          }
+        }
+
+        // Buffer discovered files
+        for (const file of initialFileItems) {
+          const fileFid = file.providerFileId || (file as any).id;
+          if (!fileFid) continue;
+          state.initialFileItems.push({
+            providerFileId: fileFid,
+            name: file.name,
+            mimeType: file.mimeType,
+            sizeBytes: file.sizeBytes ?? (file as any).size ?? 0,
+            md5Checksum: file.md5Checksum,
+            webUrl: file.webUrl ?? (file as any).webViewLink,
+            isStarred: file.isStarred ?? (file as any).starred ?? false,
+            isTrashed: file.isTrashed ?? (file as any).trashed ?? false,
+            createdAt: file.createdAt ?? (file as any).createdTime ?? new Date().toISOString(),
+            modifiedAt: file.modifiedAt ?? (file as any).modifiedTime ?? new Date().toISOString(),
+            parentFolderId: file.parentFolderId,
+            parentFolderIds: file.parentFolderIds,
+          });
+          state.filesDiscovered++;
+        }
+
+        state.folderMap = Object.fromEntries(folderMap);
+
+        if (listResult.nextPageToken) {
+          state.globalPageToken = listResult.nextPageToken;
+          state.stepCount++;
+          return {
+            state,
+            hasMore: true,
+            status: 'running',
+            progress: {
+              filesDiscovered: state.filesDiscovered,
+              filesAdded: state.filesAddedOrUpdated,
+              filesUpdated: 0,
+              filesRemoved: state.filesRemoved,
+              foldersProcessed: state.foldersProcessed,
+              phase: state.phase,
+              stepCount: state.stepCount,
+              hasMore: true,
+            },
+          };
+        } else {
+          state.globalPageToken = null;
+          state.phase = 'ENUMERATE_FOLDERS';
+          state.stepCount++;
+          return {
+            state,
+            hasMore: true,
+            status: 'running',
+            progress: {
+              filesDiscovered: state.filesDiscovered,
+              filesAdded: state.filesAddedOrUpdated,
+              filesUpdated: 0,
+              filesRemoved: state.filesRemoved,
+              foldersProcessed: state.foldersProcessed,
+              phase: state.phase,
+              stepCount: state.stepCount,
+              hasMore: true,
+            },
+          };
+        }
+      }
+
+      // Phase 2: ENUMERATE_FOLDERS
+      if (state.phase === 'ENUMERATE_FOLDERS') {
+        let foldersHandledInThisStep = 0;
+
+        while (foldersHandledInThisStep < maxFoldersPerStep) {
+          let target: ResumableFolderTarget | null = null;
+
+          if (state.currentFolderPagination) {
+            target = {
+              providerFolderId: state.currentFolderPagination.providerFolderId,
+              virtualFolderId: state.currentFolderPagination.virtualFolderId,
+            };
+          } else if (state.foldersToQuery.length > 0) {
+            target = state.foldersToQuery.shift()!;
+          } else {
+            state.phase = 'RESOLVE_REMAINING_FILES';
+            state.isEnumerationComplete = true;
+            break;
+          }
+
+          if (
+            !state.currentFolderPagination &&
+            state.visitedFolders.includes(target.providerFolderId)
+          ) {
+            continue;
+          }
+
+          const pageToken = state.currentFolderPagination?.pageToken || undefined;
+
+          let directChildren: ProviderFileListResult;
+          try {
+            if (typeof (provider as any).listFilesInFolder === 'function') {
+              directChildren = await (provider as any).listFilesInFolder(accessToken, target.providerFolderId, {
+                fetchAllPages: false,
+                pageToken,
+                pageSize: 100,
+                includeShared: false,
+              });
+            } else {
+              directChildren = await provider.listFiles(accessToken, {
+                fetchAllPages: false,
+                pageToken,
+                pageSize: 100,
+                folderId: target.providerFolderId,
+                includeShared: false,
+              });
+            }
+          } catch (queryErr: any) {
+            logger.warn(
+              `Failed to query folder contents for ${target.providerFolderId}: ${queryErr.message}`
+            );
+            state.allQueriesPaginationComplete = false;
+            if (!state.visitedFolders.includes(target.providerFolderId)) {
+              state.visitedFolders.push(target.providerFolderId);
+            }
+            state.currentFolderPagination = null;
+            foldersHandledInThisStep++;
+            continue;
+          }
+
+          if (target.virtualFolderId && state.rootVirtualFolderIds.includes(target.virtualFolderId)) {
+            await query(
+              `UPDATE virtual_folders SET
+                updated_at = NOW(),
+                is_trashed = FALSE,
+                trashed_at = NULL
+               WHERE id = $1 AND user_id = $2`,
+              [target.virtualFolderId, userId]
+            );
+          }
+
+          const childFiles = directChildren.files.filter(
+            (c) => c.ownedByMe !== false && !c.isShared
+          );
+
+          for (const child of childFiles) {
+            const childFid = child.providerFileId || (child as any).id;
+            if (!childFid) continue;
+
+            if (!state.allDiscoveredItemIds.includes(childFid)) {
+              state.allDiscoveredItemIds.push(childFid);
+            }
+
+            const isDirectChild =
+              child.parentFolderId === target.providerFolderId ||
+              (child.parentFolderIds &&
+                child.parentFolderIds.includes(target.providerFolderId)) ||
+              (target.providerFolderId === 'root' &&
+                (!child.parentFolderId || child.parentFolderId === 'root'));
+
+            if (!isDirectChild) {
+              continue;
+            }
+
+            const isChildFolder =
+              child.isFolder ||
+              child.mimeType === 'application/vnd.google-apps.folder';
+
+            if (isChildFolder) {
+              const existingFolderId = folderMap.get(childFid);
+              const folderId = existingFolderId || crypto.randomUUID();
+
+              const upsertResult = await query<{ id: string }>(
+                `INSERT INTO virtual_folders (
+                  id, user_id, parent_id, storage_account_id, provider, provider_folder_id,
+                  name, is_starred, is_trashed, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                ON CONFLICT (storage_account_id, provider_folder_id) DO UPDATE SET
+                  parent_id = EXCLUDED.parent_id,
+                  name = EXCLUDED.name,
+                  is_starred = EXCLUDED.is_starred,
+                  is_trashed = EXCLUDED.is_trashed,
+                  trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_folders.trashed_at END,
+                  updated_at = NOW()
+                RETURNING id`,
+                [
+                  folderId,
+                  userId,
+                  target.virtualFolderId,
+                  accountId,
+                  ProviderType.GOOGLE_DRIVE,
+                  childFid,
+                  child.name,
+                  child.isStarred ?? (child as any).starred ?? false,
+                  child.isTrashed ?? (child as any).trashed ?? false,
+                  child.createdAt ?? (child as any).createdTime ?? new Date().toISOString(),
+                  child.modifiedAt ?? (child as any).modifiedTime ?? new Date().toISOString(),
+                ]
+              );
+
+              const authoritativeFolderId = upsertResult.rows[0]?.id || folderId;
+              folderMap.set(childFid, authoritativeFolderId);
+
+              if (
+                !state.visitedFolders.includes(childFid) &&
+                !state.foldersToQuery.some((f) => f.providerFolderId === childFid)
+              ) {
+                state.foldersToQuery.push({
+                  providerFolderId: childFid,
+                  virtualFolderId: authoritativeFolderId,
+                });
+              }
+            } else {
+              if (!state.seenFileProviderIds.includes(childFid)) {
+                state.seenFileProviderIds.push(childFid);
+              }
+              const fileId = crypto.randomUUID();
+
+              await query(
+                `INSERT INTO virtual_files (
+                  id, user_id, storage_account_id, parent_id, provider, provider_file_id,
+                  name, mime_type, size_bytes, md5_checksum, web_url, is_starred, is_trashed,
+                  provider_created_at, provider_modified_at, synced_at, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW(), NOW())
+                ON CONFLICT (storage_account_id, provider_file_id) DO UPDATE SET
+                  parent_id = EXCLUDED.parent_id,
+                  name = EXCLUDED.name,
+                  mime_type = EXCLUDED.mime_type,
+                  size_bytes = EXCLUDED.size_bytes,
+                  md5_checksum = EXCLUDED.md5_checksum,
+                  web_url = EXCLUDED.web_url,
+                  is_starred = EXCLUDED.is_starred,
+                  is_trashed = EXCLUDED.is_trashed,
+                  trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_files.trashed_at END,
+                  provider_modified_at = EXCLUDED.provider_modified_at,
+                  synced_at = NOW(),
+                  updated_at = NOW()`,
+                [
+                  fileId,
+                  userId,
+                  accountId,
+                  target.virtualFolderId,
+                  ProviderType.GOOGLE_DRIVE,
+                  childFid,
+                  child.name,
+                  child.mimeType,
+                  child.sizeBytes ?? (child as any).size ?? 0,
+                  child.md5Checksum || null,
+                  child.webUrl ?? (child as any).webViewLink ?? null,
+                  child.isStarred ?? (child as any).starred ?? false,
+                  child.isTrashed ?? (child as any).trashed ?? false,
+                  child.createdAt ?? (child as any).createdTime ?? new Date().toISOString(),
+                  child.modifiedAt ?? (child as any).modifiedTime ?? new Date().toISOString(),
+                ]
+              );
+              state.filesAddedOrUpdated++;
+            }
+          }
+
+          if (directChildren.nextPageToken) {
+            state.currentFolderPagination = {
+              providerFolderId: target.providerFolderId,
+              virtualFolderId: target.virtualFolderId,
+              pageToken: directChildren.nextPageToken,
+            };
+            foldersHandledInThisStep++;
+            break;
+          } else {
+            if (!state.visitedFolders.includes(target.providerFolderId)) {
+              state.visitedFolders.push(target.providerFolderId);
+            }
+            state.currentFolderPagination = null;
+            state.foldersProcessed++;
+            foldersHandledInThisStep++;
+          }
+        }
+
+        state.folderMap = Object.fromEntries(folderMap);
+
+        if (state.foldersToQuery.length === 0 && !state.currentFolderPagination) {
+          state.phase = 'RESOLVE_REMAINING_FILES';
+          state.isEnumerationComplete = true;
+        }
+
+        state.stepCount++;
+        return {
+          state,
+          hasMore: true,
+          status: 'running',
+          progress: {
+            filesDiscovered: state.filesDiscovered,
+            filesAdded: state.filesAddedOrUpdated,
+            filesUpdated: 0,
+            filesRemoved: state.filesRemoved,
+            foldersProcessed: state.foldersProcessed,
+            phase: state.phase,
+            stepCount: state.stepCount,
+            hasMore: true,
+          },
+        };
+      }
+
+      // Phase 3: RESOLVE_REMAINING_FILES
+      if (state.phase === 'RESOLVE_REMAINING_FILES') {
+        let filesHandledInThisStep = 0;
+
+        while (state.initialFileItems.length > 0 && filesHandledInThisStep < maxFilesPerStep) {
+          const file = state.initialFileItems.shift()!;
+          filesHandledInThisStep++;
+
+          if (state.seenFileProviderIds.includes(file.providerFileId)) {
+            continue;
+          }
+
+          const candidateParents = [
+            ...(file.parentFolderIds || []),
+            file.parentFolderId,
+          ].filter((p): p is string => Boolean(p));
+
+          let resolvedParentId: string | null = null;
+          for (const p of candidateParents) {
+            resolvedParentId = await this.resolveAuthoritativeParentId(
+              p,
+              folderMap,
+              userId,
+              accountId,
+              provider,
+              accessToken
+            );
+            if (resolvedParentId) break;
+          }
+
+          const fileId = crypto.randomUUID();
+          await query(
+            `INSERT INTO virtual_files (
+              id, user_id, storage_account_id, parent_id, provider, provider_file_id,
+              name, mime_type, size_bytes, md5_checksum, web_url, is_starred, is_trashed,
+              provider_created_at, provider_modified_at, synced_at, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW(), NOW())
+            ON CONFLICT (storage_account_id, provider_file_id) DO UPDATE SET
+              parent_id = COALESCE(EXCLUDED.parent_id, virtual_files.parent_id),
+              name = EXCLUDED.name,
+              mime_type = EXCLUDED.mime_type,
+              size_bytes = EXCLUDED.size_bytes,
+              md5_checksum = EXCLUDED.md5_checksum,
+              web_url = EXCLUDED.web_url,
+              is_starred = EXCLUDED.is_starred,
+              is_trashed = EXCLUDED.is_trashed,
+              trashed_at = CASE WHEN EXCLUDED.is_trashed = FALSE THEN NULL ELSE virtual_files.trashed_at END,
+              provider_modified_at = EXCLUDED.provider_modified_at,
+              synced_at = NOW(),
+              updated_at = NOW()`,
+            [
+              fileId,
+              userId,
+              accountId,
+              resolvedParentId,
+              ProviderType.GOOGLE_DRIVE,
+              file.providerFileId,
+              file.name,
+              file.mimeType,
+              file.sizeBytes,
+              file.md5Checksum || null,
+              file.webUrl || null,
+              file.isStarred ?? false,
+              file.isTrashed ?? false,
+              file.createdAt,
+              file.modifiedAt,
+            ]
+          );
+
+          state.seenFileProviderIds.push(file.providerFileId);
+          state.filesAddedOrUpdated++;
+        }
+
+        state.folderMap = Object.fromEntries(folderMap);
+
+        if (state.initialFileItems.length === 0) {
+          state.phase = 'RECONCILE_AND_COMPLETE';
+        }
+
+        state.stepCount++;
+        return {
+          state,
+          hasMore: true,
+          status: 'running',
+          progress: {
+            filesDiscovered: state.filesDiscovered,
+            filesAdded: state.filesAddedOrUpdated,
+            filesUpdated: 0,
+            filesRemoved: state.filesRemoved,
+            foldersProcessed: state.foldersProcessed,
+            phase: state.phase,
+            stepCount: state.stepCount,
+            hasMore: true,
+          },
+        };
+      }
+
+      // Phase 4: RECONCILE_AND_COMPLETE
+      if (state.phase === 'RECONCILE_AND_COMPLETE') {
+        state.isEnumerationComplete = true;
+        let filesRemoved = 0;
+        let startChangeToken: string | null = null;
+
+        if (state.allQueriesPaginationComplete) {
+          const staleFilesResult = await query(
+            `UPDATE virtual_files SET
+              is_trashed = TRUE,
+              trashed_at = NOW(),
+              updated_at = NOW()
+             WHERE storage_account_id = $1
+               AND user_id = $2
+               AND is_trashed = FALSE
+               AND synced_at < $3`,
+            [accountId, userId, state.syncStartTime]
+          );
+          filesRemoved = staleFilesResult.rowCount || 0;
+          state.filesRemoved = filesRemoved;
+
+          const rootIdsArray = state.rootVirtualFolderIds;
+          if (rootIdsArray.length > 0) {
+            await query(
+              `UPDATE virtual_folders SET
+                is_trashed = TRUE,
+                trashed_at = NOW(),
+                updated_at = NOW()
+               WHERE storage_account_id = $1
+                 AND user_id = $2
+                 AND is_trashed = FALSE
+                 AND updated_at < $3
+                 AND id != ALL($4)
+                 AND (provider_folder_id IS NULL OR provider_folder_id != 'root')
+                 AND LOWER(TRIM(name)) != 'my drive'
+                 AND (parent_id IS NOT NULL OR LOWER(TRIM(name)) != 'root')`,
+              [accountId, userId, state.syncStartTime, rootIdsArray]
+            );
+          } else {
+            await query(
+              `UPDATE virtual_folders SET
+                is_trashed = TRUE,
+                trashed_at = NOW(),
+                updated_at = NOW()
+               WHERE storage_account_id = $1
+                 AND user_id = $2
+                 AND is_trashed = FALSE
+                 AND updated_at < $3
+                 AND (provider_folder_id IS NULL OR provider_folder_id != 'root')
+                 AND LOWER(TRIM(name)) != 'my drive'
+                 AND (parent_id IS NOT NULL OR LOWER(TRIM(name)) != 'root')`,
+              [accountId, userId, state.syncStartTime]
+            );
+          }
+
+          if (rootIdsArray.length > 0) {
+            await query(
+              `UPDATE virtual_folders SET
+                is_trashed = FALSE,
+                trashed_at = NULL,
+                updated_at = NOW()
+               WHERE storage_account_id = $1
+                 AND user_id = $2
+                 AND id = ANY($3)`,
+              [accountId, userId, rootIdsArray]
+            );
+          }
+          await query(
+            `UPDATE virtual_folders SET
+              is_trashed = FALSE,
+              trashed_at = NULL,
+              updated_at = NOW()
+             WHERE storage_account_id = $1
+               AND user_id = $2
+               AND (
+                 provider_folder_id = 'root'
+                 OR LOWER(TRIM(name)) = 'my drive'
+                 OR (parent_id IS NULL AND LOWER(TRIM(name)) = 'root')
+               )`,
+            [accountId, userId]
+          );
+
+          await accountService.setInitialSyncCompleted(userId, accountId, true);
+
+          try {
+            startChangeToken = await provider.getStartPageToken(accessToken);
+          } catch (tokenErr: any) {
+            logger.warn(`Could not establish start page token during full sync: ${tokenErr.message}`);
+          }
+          if (startChangeToken) {
+            await accountService.updateChangeToken(userId, accountId, startChangeToken);
+          }
+        } else {
+          logger.warn(
+            `Account ${accountId} sync pagination was truncated or incomplete. Stale file reconciliation skipped.`
+          );
+          await accountService.setInitialSyncCompleted(userId, accountId, false);
+        }
+
+        const syncStatus = state.allQueriesPaginationComplete ? 'completed' : 'partial';
+        const syncNote = state.allQueriesPaginationComplete
+          ? null
+          : 'Pagination truncated: maxPages reached before consuming all upstream pages. Stale-item reconciliation skipped.';
+
+        await query(
+          `INSERT INTO sync_history (
+            id, user_id, storage_account_id, status, files_discovered,
+            files_added, files_updated, files_removed, error_message, started_at, completed_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+          [
+            crypto.randomUUID(),
+            userId,
+            accountId,
+            syncStatus,
+            state.allDiscoveredItemIds.length,
+            state.filesAddedOrUpdated,
+            0,
+            filesRemoved,
+            syncNote,
+            state.syncStartTime,
+          ]
+        );
+
+        await accountService.updateAccountStatus(userId, accountId, AccountStatus.ACTIVE, null);
+        state.isReconciliationComplete = true;
+
+        const finalSyncResult: SyncResult = {
+          accountId,
+          filesDiscovered: state.allDiscoveredItemIds.length,
+          filesAddedOrUpdated: state.filesAddedOrUpdated,
+          filesRemoved,
+          foldersProcessed: Object.keys(state.folderMap).length,
+          quotaUpdated: true,
+          paginationComplete: state.allQueriesPaginationComplete,
+          timestamp: new Date().toISOString(),
+          syncType: 'full',
+          changeToken: startChangeToken,
+        };
+
+        return {
+          state,
+          hasMore: false,
+          status: 'completed',
+          progress: {
+            filesDiscovered: state.filesDiscovered,
+            filesAdded: state.filesAddedOrUpdated,
+            filesUpdated: 0,
+            filesRemoved: state.filesRemoved,
+            foldersProcessed: state.foldersProcessed,
+            phase: state.phase,
+            stepCount: state.stepCount,
+            hasMore: false,
+          },
+          syncResult: finalSyncResult,
+        };
+      }
+
+      return {
+        state,
+        hasMore: false,
+        status: 'completed',
+        progress: {
+          filesDiscovered: state.filesDiscovered,
+          filesAdded: state.filesAddedOrUpdated,
+          filesUpdated: 0,
+          filesRemoved: state.filesRemoved,
+          foldersProcessed: state.foldersProcessed,
+          phase: state.phase,
+          stepCount: state.stepCount,
+          hasMore: false,
+        },
+      };
+    } catch (err: any) {
+      logger.error(`Failed during sync step for account ${accountId}`, { error: err.message });
+      const status = err.code === ErrorCode.TOKEN_EXPIRED ? AccountStatus.TOKEN_EXPIRED : AccountStatus.ERROR;
+      await accountService.updateAccountStatus(userId, accountId, status, err.message);
+
+      try {
+        await query(
+          `INSERT INTO sync_history (
+            id, user_id, storage_account_id, status, files_discovered,
+            files_added, files_updated, files_removed, error_message, started_at, completed_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+          [
+            crypto.randomUUID(),
+            userId,
+            accountId,
+            'failed',
+            0,
+            0,
+            0,
+            0,
+            err.message || 'Sync step failed',
+            state.syncStartTime || new Date().toISOString(),
+          ]
+        );
+      } catch (histErr: any) {
+        logger.warn(`Failed to record sync failure in sync_history: ${histErr.message}`);
+      }
+
+      throw err;
+    }
+  }
+
   private async executeSyncAccount(userId: string, accountId: string): Promise<SyncResult> {
+    logger.info(`Starting bounded full sync for account ${accountId}, user ${userId}`);
+    let state: SyncContinuationState | null = null;
+    let lastOutput: BoundedStepOutput;
+    do {
+      lastOutput = await this.executeBoundedStep(userId, accountId, state, 'full');
+      state = lastOutput.state;
+    } while (lastOutput.hasMore);
+
+    if (!lastOutput.syncResult) {
+      throw new Error('Sync ended without producing a final result');
+    }
+    return lastOutput.syncResult;
+  }
+
+  private async executeLegacySyncAccount(userId: string, accountId: string): Promise<SyncResult> {
     const syncStartTime = new Date();
     logger.info(`Starting full sync for account ${accountId}, user ${userId}`);
 

@@ -23,6 +23,8 @@ import {
   SyncJobMode,
   SyncJobProgress,
   CreateSyncJobResponse,
+  SyncContinuationState,
+  SyncJobStepResult,
 } from '../../types/sync.js';
 
 // Safe dynamic waitUntil wrapper for @vercel/functions
@@ -72,6 +74,19 @@ function mapRowToJob(row: any): SyncJobRecord {
     }
   }
 
+  let continuationState = null;
+  if (row.continuation_state) {
+    if (typeof row.continuation_state === 'string') {
+      try {
+        continuationState = JSON.parse(row.continuation_state);
+      } catch {
+        // keep null
+      }
+    } else if (typeof row.continuation_state === 'object') {
+      continuationState = row.continuation_state;
+    }
+  }
+
   return {
     id: row.id,
     userId: row.user_id,
@@ -84,6 +99,7 @@ function mapRowToJob(row: any): SyncJobRecord {
     progress,
     result: result || null,
     clientRequestId: row.client_request_id || null,
+    continuationState: continuationState || null,
     createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : new Date().toISOString(),
   };
@@ -237,6 +253,7 @@ export class SyncJobService {
       errorMessage?: string | null;
       progress?: SyncJobProgress;
       result?: any;
+      continuationState?: SyncContinuationState | null;
     }
   ): Promise<SyncJobRecord | null> {
     const existing = await this.getJobInternal(jobId);
@@ -248,11 +265,13 @@ export class SyncJobService {
     const newErrorMessage = updates.errorMessage !== undefined ? updates.errorMessage : existing.errorMessage;
     const newProgress = updates.progress || existing.progress;
     const newResult = updates.result !== undefined ? updates.result : existing.result;
+    const newContinuationState =
+      updates.continuationState !== undefined ? updates.continuationState : existing.continuationState;
 
     const res = await query(
       `UPDATE sync_jobs 
-       SET status = $1, started_at = $2, completed_at = $3, error_message = $4, progress = $5, result = $6, updated_at = NOW()
-       WHERE id = $7
+       SET status = $1, started_at = $2, completed_at = $3, error_message = $4, progress = $5, result = $6, continuation_state = $7, updated_at = NOW()
+       WHERE id = $8
        RETURNING *`,
       [
         newStatus,
@@ -261,6 +280,7 @@ export class SyncJobService {
         newErrorMessage,
         JSON.stringify(newProgress),
         newResult ? JSON.stringify(newResult) : null,
+        newContinuationState ? JSON.stringify(newContinuationState) : null,
         jobId,
       ]
     );
@@ -310,7 +330,149 @@ export class SyncJobService {
   }
 
   /**
-   * Internal job runner: executes the sync and updates the job record.
+   * Advances a sync job by one bounded execution step.
+   * Persists updated continuation_state to ensure execution survives timeouts or restarts.
+   */
+  async processSyncJobStep(
+    jobId: string,
+    options?: {
+      maxFoldersPerStep?: number;
+      maxFilesPerStep?: number;
+    }
+  ): Promise<SyncJobStepResult> {
+    const job = await this.getJobInternal(jobId);
+    if (!job) {
+      throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, `Sync job ${jobId} not found`, 404);
+    }
+
+    if (job.status === 'completed' || job.status === 'failed') {
+      return {
+        jobId: job.id,
+        status: job.status,
+        phase: job.continuationState?.phase || 'RECONCILE_AND_COMPLETE',
+        hasMore: false,
+        stepCount: job.continuationState?.stepCount || 1,
+        progress: job.progress,
+        errorMessage: job.errorMessage,
+        result: job.result,
+      };
+    }
+
+    if (job.status === 'queued') {
+      await this.updateJobStatus(jobId, {
+        status: 'running',
+        startedAt: job.startedAt || new Date().toISOString(),
+      });
+    }
+
+    try {
+      const stepOutput = await syncService.executeBoundedStep(
+        job.userId,
+        job.storageAccountId,
+        job.continuationState || null,
+        job.mode,
+        options
+      );
+
+      if (stepOutput.hasMore) {
+        await this.updateJobStatus(jobId, {
+          status: 'running',
+          continuationState: stepOutput.state,
+          progress: stepOutput.progress,
+        });
+
+        return {
+          jobId: job.id,
+          status: 'running',
+          phase: stepOutput.state.phase,
+          hasMore: true,
+          stepCount: stepOutput.state.stepCount,
+          progress: stepOutput.progress,
+        };
+      } else {
+        // Final phase reached
+        if (stepOutput.syncResult?.paginationComplete === false) {
+          logger.warn(
+            `Sync job ${jobId} finished with incomplete pagination. Marking as failed to preserve safety.`
+          );
+          await this.updateJobStatus(jobId, {
+            status: 'failed',
+            completedAt: new Date().toISOString(),
+            errorMessage:
+              'Synchronization was truncated before all pages were processed. Stale items were safely preserved.',
+            continuationState: stepOutput.state,
+            progress: {
+              ...stepOutput.progress,
+              message: 'Incomplete pagination: sync stopped early',
+            },
+            result: stepOutput.syncResult,
+          });
+
+          return {
+            jobId: job.id,
+            status: 'failed',
+            phase: stepOutput.state.phase,
+            hasMore: false,
+            stepCount: stepOutput.state.stepCount,
+            progress: stepOutput.progress,
+            errorMessage:
+              'Synchronization was truncated before all pages were processed. Stale items were safely preserved.',
+            result: stepOutput.syncResult,
+          };
+        }
+
+        await this.updateJobStatus(jobId, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+          continuationState: stepOutput.state,
+          progress: {
+            ...stepOutput.progress,
+            message: 'Synchronization completed successfully',
+          },
+          result: stepOutput.syncResult,
+        });
+
+        return {
+          jobId: job.id,
+          status: 'completed',
+          phase: stepOutput.state.phase,
+          hasMore: false,
+          stepCount: stepOutput.state.stepCount,
+          progress: stepOutput.progress,
+          result: stepOutput.syncResult,
+        };
+      }
+    } catch (err: any) {
+      logger.error(`Error processing step for sync job ${jobId}`, {
+        error: err?.message,
+      });
+
+      await this.updateJobStatus(jobId, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        errorMessage: err?.message || 'Sync step execution failed',
+        progress: {
+          ...job.progress,
+          message: err?.message || 'Sync step execution failed',
+        },
+      });
+
+      return {
+        jobId: job.id,
+        status: 'failed',
+        phase: job.continuationState?.phase || 'INITIALIZE',
+        hasMore: false,
+        stepCount: (job.continuationState?.stepCount || 0) + 1,
+        progress: job.progress,
+        errorMessage: err?.message || 'Sync step execution failed',
+      };
+    }
+  }
+
+  /**
+   * Internal job runner: executes sync job to completion.
+   * If continuationState exists, advances bounded steps sequentially.
+   * Otherwise invokes syncService directly (which delegates to bounded steps, or mocks in test suites).
    */
   private async runJob(jobId: string): Promise<void> {
     const job = await this.getJobInternal(jobId);
@@ -321,6 +483,19 @@ export class SyncJobService {
 
     if (job.status === 'completed' || job.status === 'failed') {
       logger.info(`Sync job ${jobId} is already in terminal state: ${job.status}`);
+      return;
+    }
+
+    if (job.continuationState) {
+      logger.info(`Resuming existing continuation state for sync job ${jobId}`);
+      let hasMore = true;
+      while (hasMore) {
+        const stepResult = await this.processSyncJobStep(jobId);
+        hasMore = stepResult.hasMore;
+        if (stepResult.status === 'failed' || stepResult.status === 'completed') {
+          break;
+        }
+      }
       return;
     }
 
@@ -357,7 +532,6 @@ export class SyncJobService {
         }
       }
 
-      // Requirement 9: Never mark a job completed unless syncService actually completed successfully
       if (syncResult.paginationComplete === false) {
         logger.warn(
           `Sync job ${jobId} finished with incomplete pagination. Marking as failed to preserve safety.`

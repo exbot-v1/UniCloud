@@ -367,6 +367,7 @@ export async function ensureSchema(): Promise<void> {
         progress JSONB NOT NULL DEFAULT '{"filesDiscovered":0,"filesAdded":0,"filesUpdated":0,"filesRemoved":0}'::jsonb,
         result JSONB,
         client_request_id TEXT,
+        continuation_state JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
@@ -374,6 +375,9 @@ export async function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_sync_jobs_account_status ON sync_jobs(storage_account_id, status);
       CREATE INDEX IF NOT EXISTS idx_sync_jobs_user_status ON sync_jobs(user_id, status);
       CREATE INDEX IF NOT EXISTS idx_sync_jobs_created_at ON sync_jobs(created_at DESC);
+
+      -- Migration: Ensure continuation_state exists for Resumable Sync Jobs
+      ALTER TABLE sync_jobs ADD COLUMN IF NOT EXISTS continuation_state JSONB;
 
       -- Migration: Ensure drive_change_token exists for Delta Sync (Phase 3)
       ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS drive_change_token TEXT;
@@ -1962,6 +1966,7 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       mode: params[3] || 'full',
       status: params[4] || 'queued',
       client_request_id: clientRequestId,
+      continuation_state: null,
       progress: parsedProgress,
       result: null,
       error_message: null,
@@ -2068,6 +2073,15 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
           try { r = JSON.parse(r); } catch { /* ignore */ }
         }
         job.result = r;
+      }
+      const csMatch = normalizedSql.match(/continuation_state\s*=\s*\$(\d+)/i);
+      if (csMatch) {
+        const idx = parseInt(csMatch[1], 10) - 1;
+        let cs = params[idx];
+        if (typeof cs === 'string') {
+          try { cs = JSON.parse(cs); } catch { /* ignore */ }
+        }
+        job.continuation_state = cs;
       }
       return { rows: [job as any], rowCount: 1 };
     }

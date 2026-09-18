@@ -774,6 +774,57 @@ apiRouter.get('/sync/jobs/:jobId', requireAuth, async (req: Request, res: Respon
 });
 
 /**
+ * POST /api/sync/jobs/:jobId/step
+ * Advances a sync job by one discrete, resumable step.
+ * Useful for serverless functions, background triggers, or client-driven stepping.
+ */
+apiRouter.post('/sync/jobs/:jobId/step', requireAuth, async (req: Request, res: Response) => {
+  const requestId =
+    (req.headers['x-unicloud-request-id'] as string) ||
+    (req.query?.requestId as string) ||
+    'none';
+  const jobId = req.params.jobId?.trim();
+  const userId = req.user?.id;
+
+  res.setHeader('X-UniCloud-Request-ID', requestId);
+  res.setHeader('X-UniCloud-Build-ID', UNICLOUD_BUILD_ID);
+
+  try {
+    if (!jobId) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'Job ID is required for step advancement.', 400);
+    }
+    if (!userId) {
+      throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+    }
+
+    const job = await syncJobService.getJobById(userId, jobId);
+    if (!job) {
+      throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, `Sync job ${jobId} not found.`, 404);
+    }
+
+    const maxFoldersPerStep = req.body?.maxFoldersPerStep ? Number(req.body.maxFoldersPerStep) : undefined;
+    const maxFilesPerStep = req.body?.maxFilesPerStep ? Number(req.body.maxFilesPerStep) : undefined;
+
+    const stepResult = await syncJobService.processSyncJobStep(jobId, {
+      maxFoldersPerStep,
+      maxFilesPerStep,
+    });
+
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.json({
+      success: true,
+      data: stepResult,
+      meta: {
+        timestamp: new Date().toISOString(),
+        version: UNICLOUD_API_VERSION,
+      },
+    });
+  } catch (err: any) {
+    sendApiError(res, err);
+  }
+});
+
+/**
  * POST /api/accounts/:id/sync/delta
  * Explicit endpoint for Phase 3 incremental delta synchronization via Google Drive Changes API.
  */
