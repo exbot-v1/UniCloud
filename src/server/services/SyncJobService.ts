@@ -43,6 +43,28 @@ try {
   // Ignore
 }
 
+export function registerWithWaitUntil(
+  promise: Promise<any>,
+  reqWaitUntil?: ((promise: Promise<any>) => void) | null
+): void {
+  if (reqWaitUntil && typeof reqWaitUntil === 'function') {
+    try {
+      reqWaitUntil(promise);
+      return;
+    } catch {
+      // ignore
+    }
+  }
+  if (vercelWaitUntil) {
+    try {
+      vercelWaitUntil(promise);
+      return;
+    } catch {
+      // ignore
+    }
+  }
+}
+
 // Stale running timeout: 10 minutes
 const STALE_RUNNING_THRESHOLD_MS = 10 * 60 * 1000;
 
@@ -334,19 +356,7 @@ export class SyncJobService {
     const invocationPromise = this.scheduleWorkerInvocation(jobId, backgroundWaitUntil);
 
     // Register ONLY the single step invocation with waitUntil, NEVER trackerPromise!
-    if (backgroundWaitUntil && typeof backgroundWaitUntil === 'function') {
-      try {
-        backgroundWaitUntil(invocationPromise);
-      } catch {
-        // ignore
-      }
-    } else if (vercelWaitUntil) {
-      try {
-        vercelWaitUntil(invocationPromise);
-      } catch {
-        // ignore
-      }
-    }
+    registerWithWaitUntil(invocationPromise, backgroundWaitUntil);
 
     return trackerPromise;
   }
@@ -641,13 +651,18 @@ export class SyncJobService {
    * Dispatches a short continuation request for the job.
    * On Vercel / serverless: triggers a fast HTTP POST request to /api/sync/jobs/:jobId/step,
    * which Vercel handles as an independent invocation.
+   * The returned Promise remains pending until the continuation HTTP request is successfully
+   * dispatched/received, or the short timeout/failure is handled.
    * In non-HTTP or test environments, falls back to scheduling a fresh invocation asynchronously.
    */
-  async dispatchContinuationRequest(jobId: string): Promise<boolean> {
+  async dispatchContinuationRequest(
+    jobId: string,
+    options?: { baseUrl?: string; abortTimeoutMs?: number }
+  ): Promise<boolean> {
     const token = this.generateContinuationToken(jobId);
 
-    let baseUrl: string | null = null;
-    if (process.env.NODE_ENV !== 'test') {
+    let baseUrl: string | null = options?.baseUrl || null;
+    if (!baseUrl && process.env.NODE_ENV !== 'test') {
       if (process.env.VERCEL_URL) {
         baseUrl = `https://${process.env.VERCEL_URL}`;
       } else if (process.env.APP_URL) {
@@ -656,14 +671,15 @@ export class SyncJobService {
     }
 
     if (baseUrl && typeof fetch === 'function') {
+      const controller = new AbortController();
+      const timeoutMs = options?.abortTimeoutMs ?? 4000;
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
       try {
         const url = `${baseUrl}/api/sync/jobs/${encodeURIComponent(jobId)}/step`;
         logger.info(`Dispatching continuation request for sync job ${jobId} to ${url}`);
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-
-        fetch(url, {
+        const res = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -672,30 +688,37 @@ export class SyncJobService {
           },
           body: JSON.stringify({ isContinuation: true }),
           signal: controller.signal,
-        })
-          .then((res) => {
-            clearTimeout(timeoutId);
-            logger.debug(`Continuation request dispatched for ${jobId}, status: ${res.status}`);
-          })
-          .catch((err) => {
-            clearTimeout(timeoutId);
-            logger.warn(
-              `Continuation HTTP dispatch failed for job ${jobId}: ${err?.message}. Falling back to asynchronous scheduler.`
-            );
-            setImmediate(() => {
-              this.scheduleWorkerInvocation(jobId).catch(() => {});
-            });
-          });
+        });
 
-        return true;
-      } catch (err: any) {
+        clearTimeout(timeoutId);
+        logger.debug(`Continuation request dispatched for ${jobId}, status: ${res.status}`);
+
+        if (res.ok) {
+          return true;
+        }
+
         logger.warn(
-          `Failed to initiate HTTP continuation for job ${jobId}: ${err?.message}. Using local scheduler fallback.`
+          `Continuation HTTP dispatch returned non-OK status ${res.status} for job ${jobId}. Falling back to asynchronous scheduler.`
+        );
+      } catch (err: any) {
+        clearTimeout(timeoutId);
+        logger.warn(
+          `Continuation HTTP dispatch failed for job ${jobId}: ${err?.message}. Falling back to asynchronous scheduler.`
         );
       }
+
+      // If HTTP dispatch failed or returned non-OK, trigger fallback scheduler
+      setImmediate(() => {
+        this.scheduleWorkerInvocation(jobId).catch((err: any) => {
+          logger.error(`Error in scheduled continuation invocation fallback for job ${jobId}`, {
+            error: err?.message,
+          });
+        });
+      });
+      return false;
     }
 
-    // Fallback when no base URL is present or fetch failed synchronously (e.g. testing)
+    // Fallback when no base URL is present (e.g. testing)
     setImmediate(() => {
       this.scheduleWorkerInvocation(jobId).catch((err: any) => {
         logger.error(`Error in scheduled continuation invocation for job ${jobId}`, {
@@ -709,28 +732,16 @@ export class SyncJobService {
   /**
    * Arranges for a NEW worker invocation to continue a multi-step job.
    * Ensures the next step executes in a separate invocation context.
-   * waitUntil() is only used to trigger the short continuation request.
+   * Passes the actual continuation promise to waitUntil(), keeping it pending
+   * until the continuation HTTP request finishes or handles failure.
    */
   arrangeNextInvocation(
     jobId: string,
-    backgroundWaitUntil?: (promise: Promise<any>) => void
+    backgroundWaitUntil?: (promise: Promise<any>) => void,
+    options?: { baseUrl?: string; abortTimeoutMs?: number }
   ): Promise<boolean> {
-    const continuationPromise = this.dispatchContinuationRequest(jobId);
-
-    if (backgroundWaitUntil && typeof backgroundWaitUntil === 'function') {
-      try {
-        backgroundWaitUntil(continuationPromise);
-      } catch {
-        // ignore
-      }
-    } else if (vercelWaitUntil) {
-      try {
-        vercelWaitUntil(continuationPromise);
-      } catch {
-        // ignore
-      }
-    }
-
+    const continuationPromise = this.dispatchContinuationRequest(jobId, options);
+    registerWithWaitUntil(continuationPromise, backgroundWaitUntil);
     return continuationPromise;
   }
 

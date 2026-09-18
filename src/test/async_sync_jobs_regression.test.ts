@@ -1332,5 +1332,260 @@ describe('Asynchronous Sync Jobs & Serverless Non-Blocking Tests', () => {
       syncJobService.arrangeNextInvocation = origArrange;
     }
   });
+
+  test('17. Continuation dispatch waits for the actual HTTP request: returned promise remains pending until fetch completes', async () => {
+    const outcome = await syncJobService.createOrGetActiveJob(testUser.id, testAccount.id, 'full');
+    const jobId = outcome.jobId;
+
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    let fetchUrl = '';
+    let fetchOptions: any = null;
+    let resolveFetch: (value: any) => void;
+
+    // Create a delayed mock fetch
+    (globalThis as any).fetch = (url: string, options: any) => {
+      fetchCalled = true;
+      fetchUrl = url;
+      fetchOptions = options;
+      return new Promise((resolve) => {
+        resolveFetch = resolve;
+      });
+    };
+
+    try {
+      const continuationPromise = syncJobService.dispatchContinuationRequest(jobId, {
+        baseUrl: 'https://test-serverless.vercel.app',
+      });
+
+      // Assert that dispatchContinuationRequest immediately initiated fetch
+      assert.equal(fetchCalled, true, 'fetch must be invoked');
+      assert.ok(fetchUrl.includes(`/api/sync/jobs/${jobId}/step`), 'URL must target the /step endpoint');
+      assert.equal(fetchOptions.method, 'POST');
+      assert.equal(fetchOptions.headers['Content-Type'], 'application/json');
+
+      const token = fetchOptions.headers['x-unicloud-continuation-token'];
+      assert.ok(token, 'Must provide HMAC continuation token');
+      assert.equal(syncJobService.verifyContinuationToken(jobId, token), true, 'Continuation token must verify');
+
+      // Verify that continuationPromise is still pending while fetch has not settled
+      let settled = false;
+      continuationPromise.then(() => {
+        settled = true;
+      });
+
+      // Wait a tick
+      await new Promise((r) => setTimeout(r, 25));
+      assert.equal(settled, false, 'Continuation promise must remain pending until fetch resolves');
+
+      // Now resolve the fetch mock
+      resolveFetch!({
+        ok: true,
+        status: 202,
+        json: async () => ({ success: true }),
+      });
+
+      const result = await continuationPromise;
+      assert.equal(result, true, 'dispatchContinuationRequest must resolve to true upon success');
+      assert.equal(settled, true, 'Continuation promise must now be settled');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('18. Failed continuation falls back safely: network error or timeout invokes fallback scheduler without unhandled rejection', async () => {
+    const outcome = await syncJobService.createOrGetActiveJob(testUser.id, testAccount.id, 'full');
+    const jobId = outcome.jobId;
+
+    const originalFetch = globalThis.fetch;
+    let fallbackScheduledJobId: string | null = null;
+    const origSchedule = (syncJobService as any).scheduleWorkerInvocation.bind(syncJobService);
+    (syncJobService as any).scheduleWorkerInvocation = async (targetJobId: string) => {
+      fallbackScheduledJobId = targetJobId;
+      return Promise.resolve();
+    };
+
+    // Mock fetch to simulate a network error / drop
+    (globalThis as any).fetch = async () => {
+      throw new Error('ECONNRESET');
+    };
+
+    try {
+      const continuationPromise = syncJobService.dispatchContinuationRequest(jobId, {
+        baseUrl: 'https://test-serverless.vercel.app',
+      });
+
+      const result = await continuationPromise;
+      assert.equal(result, false, 'Failed HTTP continuation should return false');
+
+      // Wait for setImmediate fallback to run
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(fallbackScheduledJobId, jobId, 'Fallback scheduler must be invoked when HTTP dispatch fails');
+    } finally {
+      globalThis.fetch = originalFetch;
+      (syncJobService as any).scheduleWorkerInvocation = origSchedule;
+    }
+  });
+
+  test('19. One completed step schedules only one continuation: runJob with hasMore=true calls arrangeNextInvocation exactly once', async () => {
+    const connected = await accountService.connectOrUpdateAccount({
+      userId: testUser.id,
+      provider: ProviderType.GOOGLE_DRIVE,
+      providerAccountId: `provider_step19_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      email: `account_step19_${Date.now()}_${Math.random().toString(36).slice(2, 7)}@example.com`,
+      displayName: 'Step 19 Test Drive',
+      tokens: {
+        accessToken: 'mock-access-token',
+        refreshToken: 'mock-refresh-token',
+        expiresAt: new Date(Date.now() + 3600 * 1000),
+      },
+      quota: {
+        totalBytes: 15 * 1024 * 1024 * 1024,
+        usedBytes: 1024 * 1024,
+        freeBytes: 14 * 1024 * 1024 * 1024,
+        usagePercentage: 0.01,
+      },
+    });
+    const stepAccount = connected.account;
+
+    let pageRequested = 0;
+    mockProvider.listFilesHandler = async (options: any) => {
+      pageRequested++;
+      if (options?.pageToken === undefined) {
+        return {
+          files: [
+            {
+              id: 'file_step19_1',
+              name: 'File 1.txt',
+              mimeType: 'text/plain',
+              sizeBytes: 100,
+              modifiedTime: new Date().toISOString(),
+              trashed: false,
+            },
+          ],
+          nextPageToken: 'page_token_2',
+          paginationComplete: false,
+        };
+      } else {
+        return {
+          files: [
+            {
+              id: 'file_step19_2',
+              name: 'File 2.txt',
+              mimeType: 'text/plain',
+              sizeBytes: 200,
+              modifiedTime: new Date().toISOString(),
+              trashed: false,
+            },
+          ],
+          paginationComplete: true,
+        };
+      }
+    };
+
+    const origArrange = syncJobService.arrangeNextInvocation.bind(syncJobService);
+    let arrangeCalls: string[] = [];
+    (syncJobService as any).arrangeNextInvocation = async (targetJobId: string) => {
+      arrangeCalls.push(targetJobId);
+      return true;
+    };
+
+    try {
+      const outcome = await syncJobService.createOrGetActiveJob(testUser.id, stepAccount.id, 'full');
+      const stepResult = await syncJobService.runJob(outcome.jobId);
+
+      assert.ok(stepResult);
+      assert.equal((stepResult as any).hasMore, true, 'Step 1 must have hasMore=true');
+      assert.equal(arrangeCalls.length, 1, 'arrangeNextInvocation must be called exactly once for the step');
+      assert.equal(arrangeCalls[0], outcome.jobId);
+    } finally {
+      syncJobService.arrangeNextInvocation = origArrange;
+    }
+  });
+
+  test('20. No duplicate continuation is scheduled: internal continuation via /step delegates to runJob without duplicate scheduling', async () => {
+    const connected = await accountService.connectOrUpdateAccount({
+      userId: testUser.id,
+      provider: ProviderType.GOOGLE_DRIVE,
+      providerAccountId: `provider_step20_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      email: `account_step20_${Date.now()}_${Math.random().toString(36).slice(2, 7)}@example.com`,
+      displayName: 'Step 20 Test Drive',
+      tokens: {
+        accessToken: 'mock-access-token',
+        refreshToken: 'mock-refresh-token',
+        expiresAt: new Date(Date.now() + 3600 * 1000),
+      },
+      quota: {
+        totalBytes: 15 * 1024 * 1024 * 1024,
+        usedBytes: 1024 * 1024,
+        freeBytes: 14 * 1024 * 1024 * 1024,
+        usagePercentage: 0.01,
+      },
+    });
+    const stepAccount = connected.account;
+
+    mockProvider.listFilesHandler = async (options: any) => {
+      if (options?.pageToken === undefined) {
+        return {
+          files: [
+            {
+              id: 'file_step20_1',
+              name: 'File 1.txt',
+              mimeType: 'text/plain',
+              sizeBytes: 100,
+              modifiedTime: new Date().toISOString(),
+              trashed: false,
+            },
+          ],
+          nextPageToken: 'page_token_2',
+          paginationComplete: false,
+        };
+      } else {
+        return {
+          files: [
+            {
+              id: 'file_step20_2',
+              name: 'File 2.txt',
+              mimeType: 'text/plain',
+              sizeBytes: 200,
+              modifiedTime: new Date().toISOString(),
+              trashed: false,
+            },
+          ],
+          paginationComplete: true,
+        };
+      }
+    };
+
+    const origArrange = syncJobService.arrangeNextInvocation.bind(syncJobService);
+    let arrangeCount = 0;
+    (syncJobService as any).arrangeNextInvocation = async () => {
+      arrangeCount++;
+      return true;
+    };
+
+    try {
+      const outcome = await syncJobService.createOrGetActiveJob(testUser.id, stepAccount.id, 'full');
+      const jobId = outcome.jobId;
+
+      // Simulate internal continuation invocation at /api/sync/jobs/:jobId/step
+      // Verify token
+      const token = syncJobService.generateContinuationToken(jobId);
+      assert.equal(syncJobService.verifyContinuationToken(jobId, token), true);
+
+      // In routes.ts, internal continuation runs:
+      // const invocationPromise = syncJobService.runJob(jobId, reqWaitUntil, undefined, { maxFoldersPerStep, maxFilesPerStep });
+      // and returns 202 without calling arrangeNextInvocation directly.
+      const stepPromise = syncJobService.runJob(jobId);
+      const stepResult = await stepPromise;
+
+      assert.ok(stepResult);
+      assert.equal((stepResult as any).hasMore, true);
+      // arrangeNextInvocation must be called exactly once (from runJob only, never duplicated by the route)
+      assert.equal(arrangeCount, 1, 'Exactly one continuation arranged; no duplicate scheduling');
+    } finally {
+      syncJobService.arrangeNextInvocation = origArrange;
+    }
+  });
 });
 

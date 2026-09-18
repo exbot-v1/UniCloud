@@ -25,7 +25,7 @@ import { syncService } from '../services/SyncService.js';
 import { ProviderRegistry } from '../providers/ProviderRegistry.js';
 import { GoogleDriveProvider } from '../providers/GoogleDriveProvider.js';
 import { searchService } from '../services/SearchService.js';
-import { syncJobService } from '../services/SyncJobService.js';
+import { syncJobService, registerWithWaitUntil } from '../services/SyncJobService.js';
 import { SyncJobMode } from '../../types/sync.js';
 import { logger } from '../utils/logger.js';
 import { UNICLOUD_BUILD_ID, UNICLOUD_API_VERSION, UNICLOUD_BUILD_TIMESTAMP } from '../../lib/version.js';
@@ -827,16 +827,43 @@ apiRouter.post('/sync/jobs/:jobId/step', async (req: Request, res: Response) => 
     const maxFoldersPerStep = req.body?.maxFoldersPerStep ? Number(req.body.maxFoldersPerStep) : undefined;
     const maxFilesPerStep = req.body?.maxFilesPerStep ? Number(req.body.maxFilesPerStep) : undefined;
 
-    const stepResult = await syncJobService.processSyncJobStep(jobId, {
+    const reqWaitUntil = (req as any).waitUntil || (res as any).waitUntil;
+
+    if (isInternalContinuation) {
+      // Dispatched by serverless continuation request:
+      // Start the worker invocation in this invocation context via waitUntil.
+      // Do NOT wait for the sync step to complete before responding;
+      // return immediately with 202 Accepted so the caller's continuation request stays short (< 50ms).
+      // runJob is the single owner of scheduling the next invocation when hasMore=true.
+      const invocationPromise = syncJobService.runJob(jobId, reqWaitUntil, undefined, {
+        maxFoldersPerStep,
+        maxFilesPerStep,
+      });
+
+      registerWithWaitUntil(invocationPromise, reqWaitUntil);
+
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      return res.status(202).json({
+        success: true,
+        data: {
+          jobId,
+          dispatched: true,
+          message: 'Continuation worker step dispatched',
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          version: UNICLOUD_API_VERSION,
+        },
+      });
+    }
+
+    // Direct authenticated manual stepping request:
+    // runJob executes exactly ONE step, and runJob itself is the single owner
+    // of scheduling the next invocation if stepResult.hasMore is true.
+    const stepResult = await syncJobService.runJob(jobId, reqWaitUntil, undefined, {
       maxFoldersPerStep,
       maxFilesPerStep,
     });
-
-    // If hasMore is true, schedule the next step in a NEW worker invocation
-    if (stepResult.hasMore) {
-      const reqWaitUntil = (req as any).waitUntil || (res as any).waitUntil;
-      syncJobService.arrangeNextInvocation(jobId, reqWaitUntil);
-    }
 
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json({
