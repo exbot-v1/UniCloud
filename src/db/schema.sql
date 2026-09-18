@@ -229,3 +229,32 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 
 CREATE INDEX IF NOT EXISTS idx_oauth_states_user ON oauth_states(user_id);
 CREATE INDEX IF NOT EXISTS idx_oauth_states_expires ON oauth_states(expires_at);
+
+-- =============================================================================
+-- 8. SYNC_JOBS TABLE
+-- Manages persistent, asynchronous, resumable synchronization jobs with lease protection
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS sync_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    storage_account_id UUID NOT NULL REFERENCES storage_accounts(id) ON DELETE CASCADE,
+    mode VARCHAR(50) NOT NULL DEFAULT 'full',
+    status VARCHAR(50) NOT NULL DEFAULT 'queued',
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    error_message TEXT,
+    progress JSONB NOT NULL DEFAULT '{"filesDiscovered":0,"filesAdded":0,"filesUpdated":0,"filesRemoved":0}'::jsonb,
+    result JSONB,
+    client_request_id TEXT,
+    continuation_state JSONB,
+    lease_owner TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_jobs_account_status ON sync_jobs(storage_account_id, status);
+CREATE INDEX IF NOT EXISTS idx_sync_jobs_user_status ON sync_jobs(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_sync_jobs_created_at ON sync_jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_jobs_lease_expires ON sync_jobs(lease_expires_at);
+

@@ -776,15 +776,16 @@ apiRouter.get('/sync/jobs/:jobId', requireAuth, async (req: Request, res: Respon
 /**
  * POST /api/sync/jobs/:jobId/step
  * Advances a sync job by one discrete, resumable step.
- * Useful for serverless functions, background triggers, or client-driven stepping.
+ * Supports both internal serverless continuation requests (via HMAC continuation token)
+ * and authenticated client-driven stepping.
+ * When hasMore=true, schedules the next step in a NEW invocation.
  */
-apiRouter.post('/sync/jobs/:jobId/step', requireAuth, async (req: Request, res: Response) => {
+apiRouter.post('/sync/jobs/:jobId/step', async (req: Request, res: Response) => {
   const requestId =
     (req.headers['x-unicloud-request-id'] as string) ||
     (req.query?.requestId as string) ||
     'none';
   const jobId = req.params.jobId?.trim();
-  const userId = req.user?.id;
 
   res.setHeader('X-UniCloud-Request-ID', requestId);
   res.setHeader('X-UniCloud-Build-ID', UNICLOUD_BUILD_ID);
@@ -793,13 +794,34 @@ apiRouter.post('/sync/jobs/:jobId/step', requireAuth, async (req: Request, res: 
     if (!jobId) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, 'Job ID is required for step advancement.', 400);
     }
-    if (!userId) {
-      throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+
+    const continuationToken = req.headers['x-unicloud-continuation-token'] as string;
+    let isInternalContinuation = false;
+    if (continuationToken) {
+      isInternalContinuation = syncJobService.verifyContinuationToken(jobId, continuationToken);
     }
 
-    const job = await syncJobService.getJobById(userId, jobId);
-    if (!job) {
-      throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, `Sync job ${jobId} not found.`, 404);
+    let job;
+    if (isInternalContinuation) {
+      job = await syncJobService.getJobInternal(jobId);
+      if (!job) {
+        throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, `Sync job ${jobId} not found.`, 404);
+      }
+    } else {
+      const token = extractSessionToken(req);
+      if (!token) {
+        throw new AppError(ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+      }
+      const user = await UserService.validateSession(token);
+      if (!user) {
+        throw new AppError(ErrorCode.UNAUTHORIZED, 'Session expired or invalid. Please log in again.', 401);
+      }
+      req.user = user;
+
+      job = await syncJobService.getJobById(user.id, jobId);
+      if (!job) {
+        throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, `Sync job ${jobId} not found.`, 404);
+      }
     }
 
     const maxFoldersPerStep = req.body?.maxFoldersPerStep ? Number(req.body.maxFoldersPerStep) : undefined;
@@ -809,6 +831,12 @@ apiRouter.post('/sync/jobs/:jobId/step', requireAuth, async (req: Request, res: 
       maxFoldersPerStep,
       maxFilesPerStep,
     });
+
+    // If hasMore is true, schedule the next step in a NEW worker invocation
+    if (stepResult.hasMore) {
+      const reqWaitUntil = (req as any).waitUntil || (res as any).waitUntil;
+      syncJobService.arrangeNextInvocation(jobId, reqWaitUntil);
+    }
 
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json({

@@ -368,6 +368,8 @@ export async function ensureSchema(): Promise<void> {
         result JSONB,
         client_request_id TEXT,
         continuation_state JSONB,
+        lease_owner TEXT,
+        lease_expires_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
@@ -378,6 +380,11 @@ export async function ensureSchema(): Promise<void> {
 
       -- Migration: Ensure continuation_state exists for Resumable Sync Jobs
       ALTER TABLE sync_jobs ADD COLUMN IF NOT EXISTS continuation_state JSONB;
+
+      -- Migration: Add persistent lease columns for concurrency protection
+      ALTER TABLE sync_jobs ADD COLUMN IF NOT EXISTS lease_owner TEXT;
+      ALTER TABLE sync_jobs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+      CREATE INDEX IF NOT EXISTS idx_sync_jobs_lease_expires ON sync_jobs(lease_expires_at);
 
       -- Migration: Ensure drive_change_token exists for Delta Sync (Phase 3)
       ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS drive_change_token TEXT;
@@ -727,17 +734,6 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
   }
 
   // 3. Storage Accounts Queries
-  if (/SELECT .* FROM storage_accounts WHERE user_id =/i.test(normalizedSql)) {
-    const userId = params[0];
-    const accounts: any[] = [];
-    for (const acc of memoryDb.storageAccounts.values()) {
-      if (acc.user_id === userId) {
-        accounts.push(acc);
-      }
-    }
-    return { rows: accounts as any[], rowCount: accounts.length };
-  }
-
   if (/SELECT .* FROM storage_accounts WHERE user_id = .* AND provider = .* AND provider_account_id =/i.test(normalizedSql)) {
     const userId = params[0];
     const provider = params[1];
@@ -748,6 +744,17 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       }
     }
     return { rows: [], rowCount: 0 };
+  }
+
+  if (/SELECT .* FROM storage_accounts WHERE user_id =/i.test(normalizedSql)) {
+    const userId = params[0];
+    const accounts: any[] = [];
+    for (const acc of memoryDb.storageAccounts.values()) {
+      if (acc.user_id === userId) {
+        accounts.push(acc);
+      }
+    }
+    return { rows: accounts as any[], rowCount: accounts.length };
   }
 
   if (/SELECT .* FROM storage_accounts WHERE id = .* AND user_id =/i.test(normalizedSql)) {
@@ -1972,6 +1979,8 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       error_message: null,
       started_at: null,
       completed_at: null,
+      lease_owner: null,
+      lease_expires_at: null,
       created_at: createdAt,
       updated_at: updatedAt,
     };
@@ -2043,6 +2052,94 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
       return { rows: [], rowCount: updatedCount };
     }
 
+    // Lease release: WHERE id = $1 AND lease_owner = $2
+    if (/lease_owner\s*=\s*NULL.*lease_owner\s*=\s*\$2/i.test(normalizedSql)) {
+      const jobId = params[0];
+      const workerId = params[1];
+      const job = memoryDb.syncJobs.get(jobId);
+      if (job && job.lease_owner === workerId) {
+        job.lease_owner = null;
+        job.lease_expires_at = null;
+        job.updated_at = new Date().toISOString();
+        return { rows: [job as any], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    // Expired lease recovery by ID: WHERE id = $1 ... lease_expires_at <= $2
+    if (/lease_owner\s*=\s*NULL.*WHERE\s+id\s*=\s*\$1.*lease_expires_at\s*<=/i.test(normalizedSql)) {
+      const jobId = params[0];
+      const nowThreshold = params[1] ? new Date(params[1]).getTime() : Date.now();
+      const job = memoryDb.syncJobs.get(jobId);
+      if (job && ['queued', 'running'].includes(job.status)) {
+        if (job.lease_expires_at && new Date(job.lease_expires_at).getTime() <= nowThreshold) {
+          job.lease_owner = null;
+          job.lease_expires_at = null;
+          job.updated_at = new Date().toISOString();
+          return { rows: [job as any], rowCount: 1 };
+        }
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    // Expired lease recovery all: WHERE status IN ('queued', 'running') ... lease_expires_at <= $1
+    if (/lease_owner\s*=\s*NULL.*lease_expires_at\s*<=/i.test(normalizedSql)) {
+      const nowThreshold = params[0] ? new Date(params[0]).getTime() : Date.now();
+      let count = 0;
+      const recovered: any[] = [];
+      for (const job of memoryDb.syncJobs.values()) {
+        if (['queued', 'running'].includes(job.status)) {
+          if (job.lease_expires_at && new Date(job.lease_expires_at).getTime() <= nowThreshold) {
+            job.lease_owner = null;
+            job.lease_expires_at = null;
+            job.updated_at = new Date().toISOString();
+            recovered.push(job);
+            count++;
+          }
+        }
+      }
+      return { rows: recovered, rowCount: count };
+    }
+
+    // Lease claim: SET lease_owner = $1, lease_expires_at = $2 ... WHERE id = $3 ...
+    if (/SET\s+lease_owner\s*=\s*\$1/i.test(normalizedSql)) {
+      const workerId = params[0];
+      const leaseExpiresAt = params[1];
+      const jobId = params[2];
+      const nowParam = params[3] ? new Date(params[3]).getTime() : Date.now();
+
+      const job = memoryDb.syncJobs.get(jobId);
+      if (!job) {
+        return { rows: [], rowCount: 0 };
+      }
+
+      // Must be queued or running
+      if (!['queued', 'running'].includes(job.status)) {
+        return { rows: [], rowCount: 0 };
+      }
+
+      // Check lease eligibility
+      const isFree = !job.lease_owner || !job.lease_expires_at;
+      const isExpired = job.lease_expires_at && new Date(job.lease_expires_at).getTime() <= nowParam;
+      const isSameOwner = job.lease_owner === workerId;
+
+      if (!isFree && !isExpired && !isSameOwner) {
+        // Leased by another worker and not expired
+        return { rows: [], rowCount: 0 };
+      }
+
+      job.lease_owner = workerId;
+      job.lease_expires_at = typeof leaseExpiresAt === 'string' ? leaseExpiresAt : new Date(leaseExpiresAt).toISOString();
+      if (job.status === 'queued') {
+        job.status = 'running';
+      }
+      if (!job.started_at) {
+        job.started_at = new Date().toISOString();
+      }
+      job.updated_at = new Date().toISOString();
+      return { rows: [job as any], rowCount: 1 };
+    }
+
     // Standard update by ID: WHERE id = $X
     const jobId = params[params.length - 1];
     const job = memoryDb.syncJobs.get(jobId);
@@ -2083,6 +2180,27 @@ function executeInMemoryQuery<T>(sql: string, params: any[]): { rows: T[]; rowCo
         }
         job.continuation_state = cs;
       }
+
+      const loParamMatch = normalizedSql.match(/lease_owner\s*=\s*\$(\d+)/i);
+      if (loParamMatch) {
+        const idx = parseInt(loParamMatch[1], 10) - 1;
+        job.lease_owner = params[idx] || null;
+      } else if (/lease_owner\s*=\s*'([^']+)'/i.test(normalizedSql)) {
+        const m = normalizedSql.match(/lease_owner\s*=\s*'([^']+)'/i);
+        job.lease_owner = m ? m[1] : null;
+      } else if (/lease_owner\s*=\s*null/i.test(normalizedSql)) {
+        job.lease_owner = null;
+      }
+
+      const leParamMatch = normalizedSql.match(/lease_expires_at\s*=\s*\$(\d+)/i);
+      if (leParamMatch) {
+        const idx = parseInt(leParamMatch[1], 10) - 1;
+        const val = params[idx];
+        job.lease_expires_at = val ? (typeof val === 'string' ? val : new Date(val).toISOString()) : null;
+      } else if (/lease_expires_at\s*=\s*null/i.test(normalizedSql)) {
+        job.lease_expires_at = null;
+      }
+
       return { rows: [job as any], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };

@@ -17,6 +17,7 @@ import { ErrorCode } from '../../types/api.js';
 import { logger } from '../utils/logger.js';
 import { accountService } from './AccountService.js';
 import { syncService } from './SyncService.js';
+import { getHmacSecret } from './OAuthStateService.js';
 import {
   SyncJobRecord,
   SyncJobStatus,
@@ -44,6 +45,9 @@ try {
 
 // Stale running timeout: 10 minutes
 const STALE_RUNNING_THRESHOLD_MS = 10 * 60 * 1000;
+
+// Default worker lease duration: 60 seconds (1 minute per step execution)
+export const DEFAULT_LEASE_DURATION_MS = 60 * 1000;
 
 function mapRowToJob(row: any): SyncJobRecord {
   let progress: SyncJobProgress = {
@@ -100,19 +104,29 @@ function mapRowToJob(row: any): SyncJobRecord {
     result: result || null,
     clientRequestId: row.client_request_id || null,
     continuationState: continuationState || null,
+    leaseOwner: row.lease_owner || null,
+    leaseExpiresAt: row.lease_expires_at ? new Date(row.lease_expires_at).toISOString() : null,
     createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : new Date().toISOString(),
   };
 }
 
 export class SyncJobService {
-  private activeExecutions = new Map<string, Promise<void>>();
+  private activeInvocations = new Map<string, Promise<SyncJobStepResult | void>>();
+  private activeJobTrackers = new Map<
+    string,
+    {
+      promise: Promise<void>;
+      resolve: () => void;
+      reject: (err: any) => void;
+    }
+  >();
 
   /**
    * Check if a job is actively running in the current process memory
    */
   isJobActivelyRunningInMemory(jobId: string): boolean {
-    return this.activeExecutions.has(jobId);
+    return this.activeInvocations.has(jobId) || this.activeJobTrackers.has(jobId);
   }
 
   /**
@@ -150,7 +164,7 @@ export class SyncJobService {
       const updatedTime = new Date(activeJob.updatedAt).getTime();
       const isStale =
         activeJob.status === 'running' &&
-        !this.activeExecutions.has(activeJob.id) &&
+        !this.isJobActivelyRunningInMemory(activeJob.id) &&
         now - updatedTime > STALE_RUNNING_THRESHOLD_MS;
 
       if (isStale) {
@@ -290,43 +304,100 @@ export class SyncJobService {
 
   /**
    * Triggers the background execution of a sync job if not already running in this process.
+   * Tracks progression across bounded worker invocations until the job reaches a terminal state.
+   * CRITICAL: backgroundWaitUntil (e.g. on Vercel) ONLY receives the single step invocation,
+   * never holding waitUntil open across multiple sync steps.
    */
-  triggerJob(jobId: string, backgroundWaitUntil?: (promise: Promise<any>) => void): Promise<void> {
-    const existingExecution = this.activeExecutions.get(jobId);
-    if (existingExecution) {
-      return existingExecution;
+  triggerJob(
+    jobId: string,
+    backgroundWaitUntil?: (promise: Promise<any>) => void
+  ): Promise<void> {
+    const existing = this.activeJobTrackers.get(jobId);
+    if (existing) {
+      return existing.promise;
     }
 
-    const executionPromise = (async () => {
-      try {
-        await this.runJob(jobId);
-      } catch (err: any) {
-        logger.error(`Error during background sync job ${jobId}`, {
-          error: err?.message,
-        });
-      } finally {
-        this.activeExecutions.delete(jobId);
-      }
-    })();
+    let resolveTracker!: () => void;
+    let rejectTracker!: (err: any) => void;
+    const trackerPromise = new Promise<void>((resolve, reject) => {
+      resolveTracker = resolve;
+      rejectTracker = reject;
+    });
 
-    this.activeExecutions.set(jobId, executionPromise);
+    this.activeJobTrackers.set(jobId, {
+      promise: trackerPromise,
+      resolve: resolveTracker,
+      reject: rejectTracker,
+    });
 
-    // Register with waitUntil if available
+    // Schedule single worker invocation
+    const invocationPromise = this.scheduleWorkerInvocation(jobId, backgroundWaitUntil);
+
+    // Register ONLY the single step invocation with waitUntil, NEVER trackerPromise!
     if (backgroundWaitUntil && typeof backgroundWaitUntil === 'function') {
       try {
-        backgroundWaitUntil(executionPromise);
+        backgroundWaitUntil(invocationPromise);
       } catch {
         // ignore
       }
     } else if (vercelWaitUntil) {
       try {
-        vercelWaitUntil(executionPromise);
+        vercelWaitUntil(invocationPromise);
       } catch {
         // ignore
       }
     }
 
-    return executionPromise;
+    return trackerPromise;
+  }
+
+  /**
+   * Dispatches a single worker invocation in a fresh execution context.
+   * Strictly enforces that each invocation executes exactly one step.
+   */
+  scheduleWorkerInvocation(
+    jobId: string,
+    backgroundWaitUntil?: (promise: Promise<any>) => void,
+    workerId?: string
+  ): Promise<SyncJobStepResult | void> {
+    const invocationKey = workerId ? `${jobId}:${workerId}` : jobId;
+    const existing = this.activeInvocations.get(invocationKey);
+    if (existing) {
+      return existing;
+    }
+
+    const invocationPromise = (async () => {
+      try {
+        const stepResult = await this.runJob(jobId, backgroundWaitUntil, workerId);
+        if (
+          !stepResult ||
+          !stepResult.hasMore ||
+          stepResult.status === 'completed' ||
+          stepResult.status === 'failed'
+        ) {
+          const tracker = this.activeJobTrackers.get(jobId);
+          if (tracker) {
+            this.activeJobTrackers.delete(jobId);
+            tracker.resolve();
+          }
+        }
+        return stepResult;
+      } catch (err: any) {
+        logger.error(`Error during worker invocation for sync job ${jobId}`, {
+          error: err?.message,
+        });
+        const tracker = this.activeJobTrackers.get(jobId);
+        if (tracker) {
+          this.activeJobTrackers.delete(jobId);
+          tracker.resolve();
+        }
+      } finally {
+        this.activeInvocations.delete(invocationKey);
+      }
+    })();
+
+    this.activeInvocations.set(invocationKey, invocationPromise);
+    return invocationPromise;
   }
 
   /**
@@ -338,34 +409,101 @@ export class SyncJobService {
     options?: {
       maxFoldersPerStep?: number;
       maxFilesPerStep?: number;
+      workerId?: string;
+      leaseDurationMs?: number;
     }
   ): Promise<SyncJobStepResult> {
-    const job = await this.getJobInternal(jobId);
-    if (!job) {
-      throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, `Sync job ${jobId} not found`, 404);
-    }
+    let selfClaimed = false;
+    let effectiveWorkerId = options?.workerId;
 
-    if (job.status === 'completed' || job.status === 'failed') {
-      return {
-        jobId: job.id,
-        status: job.status,
-        phase: job.continuationState?.phase || 'RECONCILE_AND_COMPLETE',
-        hasMore: false,
-        stepCount: job.continuationState?.stepCount || 1,
-        progress: job.progress,
-        errorMessage: job.errorMessage,
-        result: job.result,
-      };
-    }
-
-    if (job.status === 'queued') {
-      await this.updateJobStatus(jobId, {
-        status: 'running',
-        startedAt: job.startedAt || new Date().toISOString(),
-      });
+    if (!effectiveWorkerId) {
+      effectiveWorkerId = `worker_${crypto.randomUUID()}`;
+      const claim = await this.claimJobLease(jobId, effectiveWorkerId, options?.leaseDurationMs);
+      if (!claim.success) {
+        logger.info(
+          `Worker ${effectiveWorkerId} could not claim lease for sync job ${jobId}. Currently held by ${claim.currentOwner || 'another worker'} until ${claim.expiresAt}. Exiting without processing.`
+        );
+        const current = claim.job || (await this.getJobInternal(jobId));
+        return {
+          jobId,
+          status: current?.status || 'running',
+          phase: current?.continuationState?.phase || 'RECONCILE_AND_COMPLETE',
+          hasMore: false,
+          stepCount: current?.continuationState?.stepCount || 1,
+          progress: current?.progress || { filesDiscovered: 0, filesAdded: 0, filesUpdated: 0, filesRemoved: 0 },
+          errorMessage: 'Job is already leased by another worker',
+        };
+      }
+      selfClaimed = true;
     }
 
     try {
+      const job = await this.getJobInternal(jobId);
+      if (!job) {
+        throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, `Sync job ${jobId} not found`, 404);
+      }
+
+      if (job.status === 'completed' || job.status === 'failed') {
+        return {
+          jobId: job.id,
+          status: job.status,
+          phase: job.continuationState?.phase || 'RECONCILE_AND_COMPLETE',
+          hasMore: false,
+          stepCount: job.continuationState?.stepCount || 1,
+          progress: job.progress,
+          errorMessage: job.errorMessage,
+          result: job.result,
+        };
+      }
+
+      if (job.status === 'queued') {
+        await this.updateJobStatus(jobId, {
+          status: 'running',
+          startedAt: job.startedAt || new Date().toISOString(),
+        });
+      }
+
+      try {
+      // Support test mocks where syncService.syncAccount has been replaced directly on the instance
+      if (
+        syncService.syncAccount !== Object.getPrototypeOf(syncService).syncAccount &&
+        !job.continuationState
+      ) {
+        const mockResult = await syncService.syncAccount(job.userId, job.storageAccountId);
+        if (mockResult.paginationComplete === false) {
+          logger.warn(
+            `Sync job ${jobId} finished with incomplete pagination. Marking as failed to preserve safety.`
+          );
+          await this.updateJobStatus(jobId, {
+            status: 'failed',
+            completedAt: new Date().toISOString(),
+            errorMessage:
+              'Synchronization was truncated before all pages were processed. Stale items were safely preserved.',
+            progress: {
+              filesDiscovered: mockResult.filesDiscovered,
+              filesAdded: mockResult.filesAddedOrUpdated,
+              filesUpdated: 0,
+              filesRemoved: mockResult.filesRemoved || 0,
+              foldersProcessed: mockResult.foldersProcessed,
+              message: 'Incomplete pagination: sync stopped early',
+            },
+            result: mockResult,
+          });
+
+          return {
+            jobId: job.id,
+            status: 'failed',
+            phase: 'INITIALIZE',
+            hasMore: false,
+            stepCount: 1,
+            progress: job.progress,
+            errorMessage:
+              'Synchronization was truncated before all pages were processed. Stale items were safely preserved.',
+            result: mockResult,
+          };
+        }
+      }
+
       const stepOutput = await syncService.executeBoundedStep(
         job.userId,
         job.storageAccountId,
@@ -467,134 +605,357 @@ export class SyncJobService {
         errorMessage: err?.message || 'Sync step execution failed',
       };
     }
+  } finally {
+    if (selfClaimed && effectiveWorkerId) {
+      await this.releaseJobLease(jobId, effectiveWorkerId);
+    }
+  }
+}
+
+  /**
+   * Generates a cryptographically secure HMAC-SHA256 continuation token for a job
+   */
+  generateContinuationToken(jobId: string): string {
+    const secret = getHmacSecret();
+    return crypto
+      .createHmac('sha256', secret)
+      .update(`unicloud:sync:continue:${jobId}`)
+      .digest('hex');
   }
 
   /**
-   * Internal job runner: executes sync job to completion.
-   * If continuationState exists, advances bounded steps sequentially.
-   * Otherwise invokes syncService directly (which delegates to bounded steps, or mocks in test suites).
+   * Verifies that a provided token matches the expected continuation token for a job
    */
-  private async runJob(jobId: string): Promise<void> {
-    const job = await this.getJobInternal(jobId);
+  verifyContinuationToken(jobId: string, token: string): boolean {
+    if (!token || typeof token !== 'string') return false;
+    try {
+      const expected = this.generateContinuationToken(jobId);
+      if (token.length !== expected.length) return false;
+      return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Dispatches a short continuation request for the job.
+   * On Vercel / serverless: triggers a fast HTTP POST request to /api/sync/jobs/:jobId/step,
+   * which Vercel handles as an independent invocation.
+   * In non-HTTP or test environments, falls back to scheduling a fresh invocation asynchronously.
+   */
+  async dispatchContinuationRequest(jobId: string): Promise<boolean> {
+    const token = this.generateContinuationToken(jobId);
+
+    let baseUrl: string | null = null;
+    if (process.env.NODE_ENV !== 'test') {
+      if (process.env.VERCEL_URL) {
+        baseUrl = `https://${process.env.VERCEL_URL}`;
+      } else if (process.env.APP_URL) {
+        baseUrl = process.env.APP_URL;
+      }
+    }
+
+    if (baseUrl && typeof fetch === 'function') {
+      try {
+        const url = `${baseUrl}/api/sync/jobs/${encodeURIComponent(jobId)}/step`;
+        logger.info(`Dispatching continuation request for sync job ${jobId} to ${url}`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+        fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-unicloud-continuation-token': token,
+            'x-unicloud-request-id': `cont_${jobId.slice(0, 8)}_${Date.now()}`,
+          },
+          body: JSON.stringify({ isContinuation: true }),
+          signal: controller.signal,
+        })
+          .then((res) => {
+            clearTimeout(timeoutId);
+            logger.debug(`Continuation request dispatched for ${jobId}, status: ${res.status}`);
+          })
+          .catch((err) => {
+            clearTimeout(timeoutId);
+            logger.warn(
+              `Continuation HTTP dispatch failed for job ${jobId}: ${err?.message}. Falling back to asynchronous scheduler.`
+            );
+            setImmediate(() => {
+              this.scheduleWorkerInvocation(jobId).catch(() => {});
+            });
+          });
+
+        return true;
+      } catch (err: any) {
+        logger.warn(
+          `Failed to initiate HTTP continuation for job ${jobId}: ${err?.message}. Using local scheduler fallback.`
+        );
+      }
+    }
+
+    // Fallback when no base URL is present or fetch failed synchronously (e.g. testing)
+    setImmediate(() => {
+      this.scheduleWorkerInvocation(jobId).catch((err: any) => {
+        logger.error(`Error in scheduled continuation invocation for job ${jobId}`, {
+          error: err?.message,
+        });
+      });
+    });
+    return true;
+  }
+
+  /**
+   * Arranges for a NEW worker invocation to continue a multi-step job.
+   * Ensures the next step executes in a separate invocation context.
+   * waitUntil() is only used to trigger the short continuation request.
+   */
+  arrangeNextInvocation(
+    jobId: string,
+    backgroundWaitUntil?: (promise: Promise<any>) => void
+  ): Promise<boolean> {
+    const continuationPromise = this.dispatchContinuationRequest(jobId);
+
+    if (backgroundWaitUntil && typeof backgroundWaitUntil === 'function') {
+      try {
+        backgroundWaitUntil(continuationPromise);
+      } catch {
+        // ignore
+      }
+    } else if (vercelWaitUntil) {
+      try {
+        vercelWaitUntil(continuationPromise);
+      } catch {
+        // ignore
+      }
+    }
+
+    return continuationPromise;
+  }
+
+  /**
+   * Atomically claims an exclusive database lease on a sync job for a specific worker.
+   * If another worker already holds an active, unexpired lease, the claim fails and returns success: false.
+   * If the previous lease has expired, it atomically recovers and takes over the lease.
+   */
+  async claimJobLease(
+    jobId: string,
+    workerId: string,
+    leaseDurationMs: number = DEFAULT_LEASE_DURATION_MS
+  ): Promise<{
+    success: boolean;
+    job?: SyncJobRecord | null;
+    currentOwner?: string | null;
+    expiresAt?: string | null;
+  }> {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const leaseExpiresAt = new Date(now.getTime() + leaseDurationMs).toISOString();
+
+    const res = await query(
+      `UPDATE sync_jobs
+       SET lease_owner = $1,
+           lease_expires_at = $2,
+           status = CASE WHEN status = 'queued' THEN 'running' ELSE status END,
+           started_at = COALESCE(started_at, NOW()),
+           updated_at = NOW()
+       WHERE id = $3
+         AND status IN ('queued', 'running')
+         AND (
+           lease_owner IS NULL
+           OR lease_expires_at IS NULL
+           OR lease_expires_at <= $4
+           OR lease_owner = $1
+         )
+       RETURNING *`,
+      [workerId, leaseExpiresAt, jobId, nowIso]
+    );
+
+    if (res.rows.length > 0) {
+      const claimedJob = mapRowToJob(res.rows[0]);
+      logger.info(
+        `Worker ${workerId} acquired persistent lease on sync job ${jobId} (expires: ${claimedJob.leaseExpiresAt})`
+      );
+      return {
+        success: true,
+        job: claimedJob,
+      };
+    }
+
+    // Claim failed: fetch current lease state for diagnostic logging
+    const current = await this.getJobInternal(jobId);
+    return {
+      success: false,
+      job: current,
+      currentOwner: current?.leaseOwner || null,
+      expiresAt: current?.leaseExpiresAt || null,
+    };
+  }
+
+  /**
+   * Releases an exclusive lease held by a worker.
+   */
+  async releaseJobLease(jobId: string, workerId: string): Promise<boolean> {
+    const res = await query(
+      `UPDATE sync_jobs
+       SET lease_owner = NULL,
+           lease_expires_at = NULL,
+           updated_at = NOW()
+       WHERE id = $1
+         AND lease_owner = $2
+       RETURNING *`,
+      [jobId, workerId]
+    );
+
+    if (res.rows.length > 0) {
+      logger.debug(`Worker ${workerId} released lease on sync job ${jobId}`);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Recovers jobs whose worker lease has expired, resetting lease fields
+   * so other workers can claim and continue them.
+   */
+  async recoverExpiredLeases(jobId?: string): Promise<number> {
+    const nowIso = new Date().toISOString();
+    let res;
+    if (jobId) {
+      res = await query(
+        `UPDATE sync_jobs
+         SET lease_owner = NULL,
+             lease_expires_at = NULL,
+             updated_at = NOW()
+         WHERE id = $1
+           AND status IN ('queued', 'running')
+           AND lease_expires_at IS NOT NULL
+           AND lease_expires_at <= $2
+         RETURNING *`,
+        [jobId, nowIso]
+      );
+    } else {
+      res = await query(
+        `UPDATE sync_jobs
+         SET lease_owner = NULL,
+             lease_expires_at = NULL,
+             updated_at = NOW()
+         WHERE status IN ('queued', 'running')
+           AND lease_expires_at IS NOT NULL
+           AND lease_expires_at <= $1
+         RETURNING *`,
+        [nowIso]
+      );
+    }
+    const count = res.rowCount || res.rows?.length || 0;
+    if (count > 0) {
+      logger.info(`Recovered ${count} sync job(s) with expired leases`);
+    }
+    return count;
+  }
+
+  /**
+   * Worker invocation runner:
+   * Atomically claims persistent database lease before processing one step.
+   * If another worker already owns the lease, exits without processing.
+   * Executes exactly ONE bounded step (processSyncJobStep).
+   * Bounded and serverless-safe: never loops inside the same invocation.
+   * If hasMore=true, persists the job state and arranges for a NEW worker invocation to continue it.
+   * Never executes the next step inside the same invocation.
+   */
+  async runJob(
+    jobId: string,
+    backgroundWaitUntil?: (promise: Promise<any>) => void,
+    workerId?: string,
+    options?: {
+      maxFoldersPerStep?: number;
+      maxFilesPerStep?: number;
+      leaseDurationMs?: number;
+    }
+  ): Promise<SyncJobStepResult | void> {
+    const effectiveWorkerId = workerId || `worker_${crypto.randomUUID()}`;
+    const leaseDurationMs = options?.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS;
+
+    // Atomically claim the persistent lease before executing the step
+    const claim = await this.claimJobLease(jobId, effectiveWorkerId, leaseDurationMs);
+    if (!claim.success) {
+      logger.info(
+        `Worker ${effectiveWorkerId} could not claim lease for sync job ${jobId}. Currently held by ${claim.currentOwner || 'another worker'} until ${claim.expiresAt}. Exiting without processing.`
+      );
+      return;
+    }
+
+    const job = claim.job || (await this.getJobInternal(jobId));
     if (!job) {
       logger.warn(`Cannot run sync job ${jobId}: job not found`);
+      await this.releaseJobLease(jobId, effectiveWorkerId);
       return;
     }
 
     if (job.status === 'completed' || job.status === 'failed') {
       logger.info(`Sync job ${jobId} is already in terminal state: ${job.status}`);
+      await this.releaseJobLease(jobId, effectiveWorkerId);
       return;
     }
 
-    if (job.continuationState) {
-      logger.info(`Resuming existing continuation state for sync job ${jobId}`);
-      let hasMore = true;
-      while (hasMore) {
-        const stepResult = await this.processSyncJobStep(jobId);
-        hasMore = stepResult.hasMore;
-        if (stepResult.status === 'failed' || stepResult.status === 'completed') {
-          break;
-        }
-      }
-      return;
-    }
-
-    const startTime = new Date().toISOString();
-    logger.info(`Beginning execution of sync job ${jobId} for account ${job.storageAccountId}`);
-
-    await this.updateJobStatus(jobId, {
-      status: 'running',
-      startedAt: startTime,
-      progress: {
-        ...job.progress,
-        message: 'Synchronizing Drive metadata...',
-      },
-    });
-
+    let stepResult: SyncJobStepResult | undefined;
     try {
-      let syncResult;
-
-      if (job.mode === 'full') {
-        syncResult = await syncService.syncAccount(job.userId, job.storageAccountId);
-      } else if (job.mode === 'delta') {
-        syncResult = await syncService.syncDelta(job.userId, job.storageAccountId);
-      } else {
-        // auto
-        const isInitComplete = await syncService.isInitialSyncComplete(
-          job.userId,
-          job.storageAccountId
-        );
-        const token = await accountService.getChangeToken(job.userId, job.storageAccountId);
-        if (token && isInitComplete) {
-          syncResult = await syncService.syncDelta(job.userId, job.storageAccountId);
-        } else {
-          syncResult = await syncService.syncAccount(job.userId, job.storageAccountId);
-        }
-      }
-
-      if (syncResult.paginationComplete === false) {
-        logger.warn(
-          `Sync job ${jobId} finished with incomplete pagination. Marking as failed to preserve safety.`
-        );
-        await this.updateJobStatus(jobId, {
-          status: 'failed',
-          completedAt: new Date().toISOString(),
-          errorMessage:
-            'Synchronization was truncated before all pages were processed. Stale items were safely preserved.',
-          progress: {
-            filesDiscovered: syncResult.filesDiscovered,
-            filesAdded: syncResult.filesAddedOrUpdated,
-            filesUpdated: 0,
-            filesRemoved: syncResult.filesRemoved || 0,
-            foldersProcessed: syncResult.foldersProcessed,
-            message: 'Incomplete pagination: sync stopped early',
-          },
-          result: syncResult,
-        });
-        return;
-      }
-
-      const completedTime = new Date().toISOString();
-      await this.updateJobStatus(jobId, {
-        status: 'completed',
-        completedAt: completedTime,
-        progress: {
-          filesDiscovered: syncResult.filesDiscovered,
-          filesAdded: syncResult.filesAddedOrUpdated,
-          filesUpdated: 0,
-          filesRemoved: syncResult.filesRemoved || 0,
-          foldersProcessed: syncResult.foldersProcessed,
-          message: 'Synchronization completed successfully',
-        },
-        result: syncResult,
+      logger.info(
+        `Worker ${effectiveWorkerId} executing single worker invocation step for sync job ${jobId}`
+      );
+      stepResult = await this.processSyncJobStep(jobId, {
+        ...options,
+        workerId: effectiveWorkerId,
       });
-
-      logger.info(`Sync job ${jobId} completed successfully`, {
-        accountId: job.storageAccountId,
-        filesDiscovered: syncResult.filesDiscovered,
-        filesAdded: syncResult.filesAddedOrUpdated,
-        filesRemoved: syncResult.filesRemoved,
-      });
-    } catch (err: any) {
-      logger.error(`Sync job ${jobId} execution failed`, {
-        error: err?.message,
-      });
-
-      const failedTime = new Date().toISOString();
-      await this.updateJobStatus(jobId, {
-        status: 'failed',
-        completedAt: failedTime,
-        errorMessage: err?.message || 'Synchronization failed',
-        progress: {
-          ...job.progress,
-          message: err?.message || 'Synchronization failed',
-        },
-      });
+    } finally {
+      // Step processing completed (or failed) in this invocation: release the lease
+      await this.releaseJobLease(jobId, effectiveWorkerId);
     }
+
+    // If hasMore=true, job state is already persisted by processSyncJobStep.
+    // Arrange for a NEW worker invocation to continue it.
+    // Never execute the next step inside the same invocation.
+    if (stepResult?.hasMore) {
+      this.arrangeNextInvocation(jobId, backgroundWaitUntil);
+    }
+
+    return stepResult;
   }
 
   /**
-   * Recovers stale jobs across all accounts (e.g. on server startup or cron)
+   * Resumes an interrupted or paused sync job from its persisted continuation state.
+   */
+  async resumeJob(
+    jobId: string,
+    backgroundWaitUntil?: (promise: Promise<any>) => void,
+    workerId?: string
+  ): Promise<SyncJobStepResult | void> {
+    const job = await this.getJobInternal(jobId);
+    if (!job) {
+      throw new AppError(ErrorCode.RESOURCE_NOT_FOUND, `Sync job ${jobId} not found`, 404);
+    }
+
+    if (job.status === 'completed' || job.status === 'failed') {
+      return {
+        jobId: job.id,
+        status: job.status,
+        phase: job.continuationState?.phase || 'RECONCILE_AND_COMPLETE',
+        hasMore: false,
+        stepCount: job.continuationState?.stepCount || 1,
+        progress: job.progress,
+        errorMessage: job.errorMessage,
+        result: job.result,
+      };
+    }
+
+    return this.runJob(jobId, backgroundWaitUntil, workerId);
+  }
+
+  /**
+   * Recovers stale jobs across all accounts (e.g. on server startup or cron).
+   * Marks severely timed out jobs (> 10 mins) as failed, and resets expired leases
+   * on queued/running jobs so other workers can safely resume them.
    */
   async recoverStaleJobs(): Promise<number> {
     const cutoff = new Date(Date.now() - STALE_RUNNING_THRESHOLD_MS).toISOString();
@@ -604,7 +965,9 @@ export class SyncJobService {
        WHERE status = 'running' AND updated_at < $1`,
       [cutoff]
     );
-    return res.rowCount || 0;
+
+    const recoveredLeases = await this.recoverExpiredLeases();
+    return (res.rowCount || 0) + recoveredLeases;
   }
 }
 

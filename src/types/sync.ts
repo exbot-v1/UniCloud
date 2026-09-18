@@ -102,6 +102,8 @@ export interface SyncJobRecord {
   result?: any;
   clientRequestId?: string | null;
   continuationState?: SyncContinuationState | null;
+  leaseOwner?: string | null;
+  leaseExpiresAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
